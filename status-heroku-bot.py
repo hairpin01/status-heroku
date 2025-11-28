@@ -1,24 +1,26 @@
 import os
 import time
-import os
-import time
 import subprocess
 import psutil
+import json
 import tempfile
 import re
 import asyncio
+import requests
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, InlineQueryHandler,
-    CallbackQueryHandler, ChosenInlineResultHandler 
-)
+    CallbackQueryHandler, ChosenInlineResultHandler )
 from telegram.error import TimedOut, NetworkError
 
 # Конфигурация
 BOT_TOKEN = "ТУТ_BOT_TOKEN"
 OWNER_ID = # ваш айди
 USER_IDS = set([])
+BOT_VERSION = "1.0.2"
 USER_IDS_FILE = "users.json"
+GITHUB_REPO = "hairpin01/status-heroku"
 USERBOT_DIR = os.path.expanduser("~/Heroku-dev") # поменяйте на свою директорию
 VENV_PYTHON = "/home/alina/.venv/bin/python" # путь до питона
 USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web" # как будет запускатся
@@ -29,6 +31,7 @@ LOG_FILE = os.path.join(USERBOT_DIR, "heroku.log") # логи
 # Глобальные переменные
 DEBUG_CHATS = set()
 monitor_task = None
+start_time = time.time()
 
 def load_users():
     """Загружает список пользователей из файла"""
@@ -37,6 +40,7 @@ def load_users():
             with open(USER_IDS_FILE, 'r') as f:
                 return set(json.load(f))
         else:
+            # Создаем файл с владельцем по умолчанию
             default_users = {OWNER_ID}
             save_users(default_users)
             return default_users
@@ -54,12 +58,58 @@ def save_users(users):
 
 
 USER_IDS = load_users()
-
+# Проверка прав
 def is_owner(user_id):
     return user_id == OWNER_ID
 
 def is_user(user_id):
     return user_id in USER_IDS or is_owner(user_id)
+
+def get_system_info():
+    cpu = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    uptime = time.time() - psutil.boot_time()
+
+    # Дополнительная информация
+    boot_time = datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S")
+    load_avg = os.getloadavg() if hasattr(os, 'getloadavg') else "N/A"
+
+    # Информация о сети
+    net_io = psutil.net_io_counters()
+
+    # Информация о боте (безопасное получение времени старта)
+    bot_uptime = 0
+    bot_start_time = "N/A"
+    if 'start_time' in globals():
+        bot_uptime = time.time() - start_time
+        bot_start_time = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
+
+    info = (
+        f"🤖 **Bot Information:**\n"
+        f"• Version: {BOT_VERSION}\n"
+        f"• Uptime: {int(bot_uptime // 3600)}h {int((bot_uptime % 3600) // 60)}m\n"
+        f"• Started: {bot_start_time}\n\n"
+
+        f"🖥 **System Information:**\n"
+        f"• CPU: {cpu}%\n"
+        f"• Load: {load_avg}\n"
+        f"• RAM: {ram.percent}% ({ram.used // (1024**3)}/{ram.total // (1024**3)} GB)\n"
+        f"• Disk: {disk.percent}% ({disk.used // (1024**3)}/{disk.total // (1024**3)} GB)\n"
+        f"• Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m\n"
+        f"• Boot: {boot_time}\n\n"
+
+        f"🌐 **Network Information:**\n"
+        f"• Sent: {net_io.bytes_sent // (1024**2)} MB\n"
+        f"• Received: {net_io.bytes_recv // (1024**2)} MB\n\n"
+
+        f"👥 **User Information:**\n"
+        f"• Total Users: {len(USER_IDS)}\n"
+        f"• Debug Chats: {len(DEBUG_CHATS)}"
+    )
+
+    return info
+
 
 # Системные функции
 def get_system_info():
@@ -87,6 +137,197 @@ def get_userbot_status():
             continue
 
     return False, None
+
+async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверить обновления бота на GitHub"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        if update.callback_query:
+            await update.callback_query.answer("❌ Доступ запрещен", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        message = await update.callback_query.message.reply_text("🔍 Проверяю обновления на GitHub...")
+        chat_id = message.chat_id
+    else:
+        await update.message.reply_text("🔍 Проверяю обновления на GitHub...")
+        chat_id = update.message.chat_id
+
+    try:
+        # Получаем информацию о последнем релизе
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 200:
+            latest_release = response.json()
+            latest_version = latest_release['tag_name']
+            release_name = latest_release['name']
+            release_notes = latest_release['body'][:500] + "..." if len(latest_release['body']) > 500 else latest_release['body']
+            published_at = latest_release['published_at']
+
+            if latest_version != BOT_VERSION:
+                message = (
+                    f"🔄 **Доступно обновление!**\n\n"
+                    f"• Текущая версия: `{BOT_VERSION}`\n"
+                    f"• Новая версия: `{latest_version}`\n"
+                    f"• Релиз: {release_name}\n"
+                    f"• Опубликован: {published_at[:10]}\n\n"
+                    f"**Что нового:**\n{release_notes}\n\n"
+                    f"Для обновления используйте /update_bot"
+                )
+            else:
+                message = f"✅ **Бот обновлен до последней версии** `{BOT_VERSION}`"
+
+        elif response.status_code == 404:
+            # Если нет релизов, проверяем последний коммит
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/commits?per_page=1"
+            response = requests.get(url, timeout=10)
+
+            if response.status_code == 200:
+                commits = response.json()
+                if commits:
+                    latest_commit = commits[0]
+                    commit_hash = latest_commit['sha'][:7]
+                    commit_message = latest_commit['commit']['message']
+                    commit_date = latest_commit['commit']['committer']['date']
+
+                    message = (
+                        f"📝 **Информация о репозитории:**\n\n"
+                        f"• Текущая версия: `{BOT_VERSION}`\n"
+                        f"• Последний коммит: `{commit_hash}`\n"
+                        f"• Дата: {commit_date[:10]}\n"
+                        f"• Сообщение: {commit_message}\n\n"
+                        f"Релизы не найдены, но есть новые коммиты."
+                    )
+                else:
+                    message = "❌ Не удалось получить информацию о коммитах"
+            else:
+                message = f"❌ Ошибка при запросе к GitHub: {response.status_code}"
+        else:
+            message = f"❌ Ошибка при проверке обновлений: {response.status_code}"
+
+    except requests.exceptions.RequestException as e:
+        message = f"❌ Ошибка сети при проверке обновлений: {str(e)}"
+    except Exception as e:
+        message = f"❌ Неожиданная ошибка: {str(e)}"
+
+    await context.bot.send_message(chat_id, message, parse_mode='Markdown')
+
+async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновить бота с GitHub"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        if update.callback_query:
+            await update.callback_query.answer("❌ Доступ запрещен", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        message = await update.callback_query.message.reply_text("🔄 Начинаю обновление бота...")
+        chat_id = message.chat_id
+    else:
+        await update.message.reply_text("🔄 Начинаю обновление бота...")
+        chat_id = update.message.chat_id
+
+    try:
+        # Сохраняем текущих пользователей перед обновлением
+        save_users(USER_IDS)
+
+        # Выполняем git pull для обновления
+        process = await asyncio.create_subprocess_shell(
+            f"cd {os.path.dirname(os.path.abspath(__file__))} && git pull",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+        output = stdout.decode() + stderr.decode()
+
+        if process.returncode == 0:
+            if "Already up to date" in output:
+                await context.bot.send_message(chat_id, "✅ Бот уже обновлен до последней версии")
+            else:
+                await context.bot.send_message(
+                    chat_id,
+                    f"✅ Бот успешно обновлен!\n\n"
+                    f"**Вывод команды:**\n```\n{output[:1000]}\n```\n\n"
+                    f"Перезапускаю бота...",
+                    parse_mode='Markdown'
+                )
+                # Перезапускаем бота
+                await restart_bot(update, context)
+        else:
+            await context.bot.send_message(
+                chat_id,
+                f"❌ Ошибка при обновлении:\n```\n{output[:1000]}\n```",
+                parse_mode='Markdown'
+            )
+
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"❌ Ошибка при обновлении: {str(e)}")
+
+# Функция для получения подробной информации о системе
+async def detailed_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подробная информация о системе"""
+    if not is_user(update.effective_user.id):
+        return
+
+    # Информация о процессах
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
+        try:
+            processes.append(proc.info)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    # Сортируем по использованию CPU
+    processes.sort(key=lambda x: x['cpu_percent'] or 0, reverse=True)
+    top_processes = processes[:5]  # Топ-5 процессов
+
+    # Информация о дисках
+    disks = []
+    for partition in psutil.disk_partitions():
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+            disks.append({
+                'device': partition.device,
+                'mountpoint': partition.mountpoint,
+                'total': usage.total // (1024**3),
+                'used': usage.used // (1024**3),
+                'percent': usage.percent
+            })
+        except PermissionError:
+            continue
+
+    # Строим сообщение
+    message = get_system_info() + "\n\n"
+
+    message += "🔥 **Топ процессов по CPU:**\n"
+    for proc in top_processes:
+        message += f"• {proc['name']}: {proc['cpu_percent'] or 0:.1f}% CPU, {proc['memory_percent'] or 0:.1f}% RAM\n"
+
+    message += "\n💾 **Диски:**\n"
+    for disk in disks:
+        message += f"• {disk['device']} ({disk['mountpoint']}): {disk['percent']}% ({disk['used']}/{disk['total']} GB)\n"
+
+    # Информация о юзерботе
+    is_running, start_time = get_userbot_status()
+    if is_running:
+        uptime = time.time() - start_time
+        message += f"\n🤖 **Юзербот:** Запущен (Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m)"
+    else:
+        message += f"\n🤖 **Юзербот:** Остановлен"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+
 
 async def del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удалить пользователя"""
@@ -116,6 +357,7 @@ async def del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Укажите ID пользователя: /del_user <id>")
 
+# Упрощенный дебаг-режим
 async def send_debug_message(message, bot=None):
     """Отправляет дебаг-сообщение во все чаты с включенным дебагом"""
     if not DEBUG_CHATS:
@@ -131,7 +373,7 @@ async def send_debug_message(message, bot=None):
         except Exception as e:
             print(f"Не удалось отправить дебаг-сообщение в {chat_id}: {e}")
 
-# Функции меню
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать главное меню"""
     if not is_user(update.effective_user.id):
@@ -151,7 +393,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📋 Логи", callback_data="logs_menu")
         ],
         [
-            InlineKeyboardButton("⚙️ Настройки", callback_data="settings"),
+            InlineKeyboardButton("🔄 Обновления", callback_data="updates_menu"),
+            InlineKeyboardButton("⚙️ Настройки", callback_data="settings")
+        ],
+        [
             InlineKeyboardButton("❓ Помощь", callback_data="help")
         ]
     ]
@@ -163,7 +408,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uptime = time.time() - start_time
         status_text += f" (Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m)"
 
-    message_text = f"🤖 **Главное меню**\n\n📊 Статус юзербота: {status_text}\n\nВыберите действие:"
+    message_text = f"🤖 **Главное меню v{BOT_VERSION}**\n\n📊 Статус юзербота: {status_text}\n\nВыберите действие:"
 
     if update.callback_query:
         await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -305,7 +550,7 @@ async def restart_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🔄 Перезапускаю юзербота...")
 
-    
+    # Сначала останавливаем
     processes = []
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
@@ -386,10 +631,19 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not is_owner(user_id):
-        await update.message.reply_text("❌ Доступ запрещен")
+        if update.callback_query:
+            await update.callback_query.answer("❌ Доступ запрещен", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
         return
 
-    await update.message.reply_text("🔄 Перезапускаю бота...")
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        message = await update.callback_query.message.reply_text("🔄 Перезапускаю бота...")
+        chat_id = message.chat_id
+    else:
+        await update.message.reply_text("🔄 Перезапускаю бота...")
+        chat_id = update.message.chat_id
 
     try:
         # Пытаемся перезапустить через systemd
@@ -401,15 +655,15 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
-            await update.message.reply_text("✅ Бот перезапускается...")
+            await context.bot.send_message(chat_id, "✅ Бот перезапускается...")
         else:
             # Если systemd не сработал, просто выходим и надеемся на перезапуск
-            await update.message.reply_text("⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
+            await context.bot.send_message(chat_id, "⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
             import sys
             sys.exit(0)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка перезапуска: {str(e)}")
+        await context.bot.send_message(chat_id, f"❌ Ошибка перезапуска: {str(e)}")
         import sys
         sys.exit(1)
 
@@ -438,8 +692,8 @@ async def show_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать помощь"""
-    help_text = """
-🤖 **Бот мониторинга системы и юзербота**
+    help_text = f"""
+🤖 **Бот мониторинга системы и юзербота v{BOT_VERSION}**
 
 **Основные команды:**
 /menu - Главное меню
@@ -449,6 +703,11 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /restart_bot - Перезапустить бота
 /status - Статус юзербота
 /info - Информация о системе
+/detailed_info - Подробная информация
+
+**Обновления:**
+/check_updates - Проверить обновления
+/update_bot - Обновить бота
 
 **Управление:**
 /install_requirements - Установить зависимости
@@ -477,9 +736,71 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
+    await update.callback_query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Информация о боте"""
+    query = update.callback_query
+
+    about_text = (
+        f"🤖 **Heroku Monitor Bot v{BOT_VERSION}**\n\n"
+        f"**Разработчик:** hairpin01\n"
+        f"**Репозиторий:** {GITHUB_REPO}\n"
+        f"**Назначение:** Мониторинг системы и управление юзерботом HerokuTL\n\n"
+        f"**Возможности:**\n"
+        f"• Управление юзерботом\n"
+        f"• Мониторинг системы\n"
+        f"• Просмотр логов\n"
+        f"• Управление пользователями\n"
+        f"• Автоматические обновления\n\n"
+        f"**Технологии:** Python, python-telegram-bot, psutil"
+    )
+
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="show_updates_menu")]]
+    await query.edit_message_text(about_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def check_updates_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка обновлений через кнопку"""
+    query = update.callback_query
+    await query.answer()
+    await check_updates(update, context)
+
+async def update_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление бота через кнопку"""
+    query = update.callback_query
+    await query.answer()
+    await update_bot(update, context)
+
+async def detailed_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подробная информация через кнопку"""
+    query = update.callback_query
+    await query.answer()
+    await detailed_info(update, context)
+
+async def show_updates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню обновлений"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🔍 Проверить обновления", callback_data="check_updates"),
+            InlineKeyboardButton("🔄 Обновить бота", callback_data="update_bot")
+        ],
+        [
+            InlineKeyboardButton("📊 Подробная информация", callback_data="detailed_info"),
+            InlineKeyboardButton("ℹ️ О боте", callback_data="about_bot")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+        ]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await update.callback_query.edit_message_text(
+        f"🔄 **Меню обновлений v{BOT_VERSION}**\n\nУправление обновлениями и информация о боте:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
 
 # Обработчики кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -565,6 +886,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await open_logs_dir_callback(update, context)
 
     # Настройки
+    elif data == "updates_menu":
+        await show_updates_menu(update, context)
+    elif data == "check_updates":
+        await check_updates_callback(update, context)
+
+    elif data == "update_bot":
+        await update_bot_callback(update, context)
+
+    elif data == "detailed_info":
+        await detailed_info_callback(update, context)
+
+    elif data == "about_bot":
+        await about_bot(update, context)
+
     elif data == "settings":
         await show_settings_menu(update, context)
 
@@ -2255,6 +2590,9 @@ async def main():
     application.add_handler(CommandHandler("get_user", get_user))
     application.add_handler(CommandHandler("restart_bot", restart_bot))
     application.add_handler(CommandHandler("restart_userbot", restart_userbot))
+    application.add_handler(CommandHandler("check_updates", check_updates))
+    application.add_handler(CommandHandler("update_bot", update_bot))
+    application.add_handler(CommandHandler("detailed_info", detailed_info))
     # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(CommandHandler("del_user", del_user))
