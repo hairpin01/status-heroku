@@ -9,7 +9,8 @@ import re
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler
+    Application, CommandHandler, ContextTypes, InlineQueryHandler,
+    CallbackQueryHandler, ChosenInlineResultHandler 
 )
 from telegram.error import TimedOut, NetworkError
 
@@ -17,6 +18,7 @@ from telegram.error import TimedOut, NetworkError
 BOT_TOKEN = "ТУТ_BOT_TOKEN"
 OWNER_ID = # ваш айди
 USER_IDS = set([])
+USER_IDS_FILE = "users.json"
 USERBOT_DIR = os.path.expanduser("~/Heroku-dev") # поменяйте на свою директорию
 VENV_PYTHON = "/home/alina/.venv/bin/python" # путь до питона
 USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web" # как будет запускатся
@@ -24,12 +26,35 @@ PROXYCHAINS_PATH = "/usr/bin/proxychains" # прокси если есть
 PROXY_CMD = f"{PROXYCHAINS_PATH} {VENV_PYTHON} -m heroku --no-web" # проксе
 LOG_FILE = os.path.join(USERBOT_DIR, "heroku.log") # логи
 
-
 # Глобальные переменные
 DEBUG_CHATS = set()
 monitor_task = None
 
-# Проверка прав
+def load_users():
+    """Загружает список пользователей из файла"""
+    try:
+        if os.path.exists(USER_IDS_FILE):
+            with open(USER_IDS_FILE, 'r') as f:
+                return set(json.load(f))
+        else:
+            default_users = {OWNER_ID}
+            save_users(default_users)
+            return default_users
+    except Exception as e:
+        print(f"Ошибка загрузки пользователей: {e}")
+        return {OWNER_ID}
+
+def save_users(users):
+    """Сохраняет список пользователей в файл"""
+    try:
+        with open(USER_IDS_FILE, 'w') as f:
+            json.dump(list(users), f)
+    except Exception as e:
+        print(f"Ошибка сохранения пользователей: {e}")
+
+
+USER_IDS = load_users()
+
 def is_owner(user_id):
     return user_id == OWNER_ID
 
@@ -63,7 +88,34 @@ def get_userbot_status():
 
     return False, None
 
-# Упрощенный дебаг-режим
+async def del_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить пользователя"""
+    if update.message.chat.type != "private":
+        await update.message.reply_text("❌ Эта команда доступна только в ЛС")
+        return
+
+    if not is_owner(update.effective_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    if context.args:
+        try:
+            user_id = int(context.args[0])
+            if user_id == OWNER_ID:
+                await update.message.reply_text("❌ Нельзя удалить владельца")
+                return
+
+            if user_id in USER_IDS:
+                USER_IDS.remove(user_id)
+                save_users(USER_IDS)  # Сохраняем изменения
+                await update.message.reply_text(f"✅ Пользователь {user_id} удален")
+            else:
+                await update.message.reply_text("❌ Пользователь не найден")
+        except ValueError:
+            await update.message.reply_text("❌ Неверный ID пользователя")
+    else:
+        await update.message.reply_text("❌ Укажите ID пользователя: /del_user <id>")
+
 async def send_debug_message(message, bot=None):
     """Отправляет дебаг-сообщение во все чаты с включенным дебагом"""
     if not DEBUG_CHATS:
@@ -243,6 +295,124 @@ async def show_ping_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+async def restart_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапустить юзербота"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    await update.message.reply_text("🔄 Перезапускаю юзербота...")
+
+    
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            cmdline_str = ' '.join(cmdline).lower()
+            if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+
+    if processes:
+        for proc in processes:
+            try:
+                proc.terminate()
+            except:
+                pass
+
+        # Ждем завершения
+        timeout = 10
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(2)
+            still_running = []
+            for proc in processes:
+                try:
+                    if proc.is_running():
+                        still_running.append(proc)
+                except:
+                    pass
+
+            if not still_running:
+                break
+
+            processes = still_running
+
+        # Если процессы все еще работают, убиваем принудительно
+        for proc in processes:
+            try:
+                proc.kill()
+            except:
+                pass
+
+    # Запускаем заново
+    try:
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['GIT_PYTHON_REFRESH'] = 'quiet'
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await update.message.reply_text("✅ Юзербот успешно перезапущен!")
+
+            global monitor_task
+            if DEBUG_CHATS:
+                if monitor_task:
+                    monitor_task.cancel()
+                monitor_task = asyncio.create_task(monitor_userbot_logs(context.bot))
+        else:
+            await update.message.reply_text("❌ Не удалось перезапустить юзербота. Проверьте логи.")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка перезапуска: {str(e)}")
+
+async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапустить бота"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    await update.message.reply_text("🔄 Перезапускаю бота...")
+
+    try:
+        # Пытаемся перезапустить через systemd
+        process = await asyncio.create_subprocess_shell(
+            "sudo systemctl restart status-heroku",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            await update.message.reply_text("✅ Бот перезапускается...")
+        else:
+            # Если systemd не сработал, просто выходим и надеемся на перезапуск
+            await update.message.reply_text("⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
+            import sys
+            sys.exit(0)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка перезапуска: {str(e)}")
+        import sys
+        sys.exit(1)
+
 async def show_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меню пользователей"""
     users_count = len(USER_IDS)
@@ -275,6 +445,8 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /menu - Главное меню
 /start_userbot - Запустить юзербота
 /stop_userbot - Остановить юзербота
+/restart_userbot - Перезапустить юзербота
+/restart_bot - Перезапустить бота
 /status - Статус юзербота
 /info - Информация о системе
 
@@ -292,6 +464,14 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /uptime - Аптайм системы
 /ping [хост] - Ping хоста
 /terminal [команда] - Выполнить команду
+
+**Пользователи:**
+/get_owner - Добавить себя
+/get_user [id] - Добавить пользователя
+/del_user [id] - Удалить пользователя
+
+**Инлайн-режим:**
+Напишите @username_бота в любом чате и начните вводить команду
 
 Используйте кнопки меню для удобного управления!
 """
@@ -329,6 +509,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="status"), InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
         await query.edit_message_text(f"📊 **Статус юзербота:**\n\n{status_text}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+    elif data.startswith("del_user_"):
+        try:
+            user_id = int(data.split("_")[2])
+            if user_id in USER_IDS and user_id != OWNER_ID:
+              USER_IDS.remove(user_id)
+              save_users(USER_IDS)
+              await query.edit_message_text(f"✅ Пользователь {user_id} удален")
+              await asyncio.sleep(2)
+              await show_users_menu(update, context)
+            else:
+              await query.edit_message_text("❌ Нельзя удалить этого пользователя")
+        except (ValueError, IndexError):
+            await query.edit_message_text("❌ Ошибка удаление пользователя")
+
     elif data == "system_info":
         info = get_system_info()
         keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="system_info"), InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
@@ -346,6 +540,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "management":
         await show_management_menu(update, context)
+
+    elif data == "delete_user":
+      await delete_user_callback(update, context)
 
     elif data == "install_requirements":
         await install_requirements_callback(update, context)
@@ -873,6 +1070,7 @@ async def add_me_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     USER_IDS.add(user_id)
+    save_users(USER_IDS)  # Сохраняем изменения
     await query.edit_message_text("✅ Вы добавлены как пользователь")
     await asyncio.sleep(2)
     await show_users_menu(update, context)
@@ -890,7 +1088,10 @@ async def list_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     users_list.append(f"\nВсего: {len(USER_IDS)} пользователей")
 
-    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="users_menu")]]
+    keyboard = [
+        [InlineKeyboardButton("🗑 Удалить пользователя", callback_data="delete_user")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="users_menu")]
+    ]
     await query.edit_message_text("\n".join(users_list), reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Оригинальные функции команд (для обработки текстовых команд)
@@ -1484,7 +1685,10 @@ async def get_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_owner(update.effective_user.id):
         return
-    USER_IDS.add(update.effective_user.id)
+
+    user_id = update.effective_user.id
+    USER_IDS.add(user_id)
+    save_users(USER_IDS)  # Сохраняем изменения
     await update.message.reply_text("✅ Вы добавлены как пользователь")
 
 async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1500,6 +1704,7 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user_id = int(context.args[0])
             USER_IDS.add(user_id)
+            save_users(USER_IDS)  # Сохраняем изменения
             await update.message.reply_text(f"✅ Пользователь {user_id} добавлен")
         except ValueError:
             await update.message.reply_text("❌ Неверный ID пользователя")
@@ -1548,7 +1753,247 @@ async def monitor_userbot_logs(bot):
         except Exception as e:
             print(f"Ошибка чтения логов: {e}")
             await asyncio.sleep(5)
+async def handle_chosen_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбранные инлайн-результаты"""
+    chosen_result = update.chosen_inline_result
+    result_id = chosen_result.result_id
+    user_id = chosen_result.from_user.id
 
+    if not is_owner(user_id):
+        return
+
+    # Запуск юзербота
+    if result_id == "start_userbot":
+        await execute_inline_start_userbot(chosen_result, context)
+
+    # Остановка юзербота
+    elif result_id == "stop_userbot":
+        await execute_inline_stop_userbot(chosen_result, context)
+
+    # Перезапуск юзербота
+    elif result_id == "restart_userbot":
+        await execute_inline_restart_userbot(chosen_result, context)
+
+async def execute_inline_start_userbot(chosen_result, context):
+    """Выполняет запуск юзербота из инлайн-режима"""
+    try:
+        # Отправляем уведомление о начале операции
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text="🔄 Запускаю юзербота через инлайн-режим..."
+        )
+
+        # Проверяем, не запущен ли уже юзербот
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="⚠️ Юзербот уже запущен"
+            )
+            return
+
+        # Запускаем юзербота
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['GIT_PYTHON_REFRESH'] = 'quiet'
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="✅ Юзербот успешно запущен через инлайн-режим!"
+            )
+
+            global monitor_task
+            if DEBUG_CHATS:
+                if monitor_task:
+                    monitor_task.cancel()
+                monitor_task = asyncio.create_task(monitor_userbot_logs(context.bot))
+        else:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="❌ Не удалось запустить юзербота через инлайн-режим. Проверьте логи."
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text=f"❌ Ошибка запуска через инлайн-режим: {str(e)}"
+        )
+
+async def execute_inline_stop_userbot(chosen_result, context):
+    """Выполняет остановку юзербота из инлайн-режима"""
+    try:
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text="🛑 Останавливаю юзербота через инлайн-режим..."
+        )
+
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info['cmdline'] or []
+                cmdline_str = ' '.join(cmdline).lower()
+                if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                    processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+                continue
+
+        if not processes:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="⚠️ Юзербот не был запущен"
+            )
+            return
+
+        for proc in processes:
+            try:
+                proc.terminate()
+            except:
+                pass
+
+        timeout = 15
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(2)
+            still_running = []
+            for proc in processes:
+                try:
+                    if proc.is_running():
+                        still_running.append(proc)
+                except:
+                    pass
+
+            if not still_running:
+                await context.bot.send_message(
+                    chat_id=chosen_result.from_user.id,
+                    text="✅ Юзербот корректно остановлен через инлайн-режим"
+                )
+                return
+
+            processes = still_running
+
+        for proc in processes:
+            try:
+                proc.kill()
+            except:
+                pass
+
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text="✅ Юзербот остановлен (принудительно) через инлайн-режим"
+        )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text=f"❌ Ошибка остановки через инлайн-режим: {str(e)}"
+        )
+
+async def execute_inline_restart_userbot(chosen_result, context):
+    """Выполняет перезапуск юзербота из инлайн-режима"""
+    try:
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text="🔄 Перезапускаю юзербота через инлайн-режим..."
+        )
+
+        # Сначала останавливаем
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info['cmdline'] or []
+                cmdline_str = ' '.join(cmdline).lower()
+                if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                    processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+                continue
+
+        if processes:
+            for proc in processes:
+                try:
+                    proc.terminate()
+                except:
+                    pass
+
+            # Ждем завершения
+            timeout = 10
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                await asyncio.sleep(2)
+                still_running = []
+                for proc in processes:
+                    try:
+                        if proc.is_running():
+                            still_running.append(proc)
+                    except:
+                        pass
+
+                if not still_running:
+                    break
+
+                processes = still_running
+
+            # Если процессы все еще работают, убиваем принудительно
+            for proc in processes:
+                try:
+                    proc.kill()
+                except:
+                    pass
+
+        # Запускаем заново
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['GIT_PYTHON_REFRESH'] = 'quiet'
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="✅ Юзербот успешно перезапущен через инлайн-режим!"
+            )
+
+            global monitor_task
+            if DEBUG_CHATS:
+                if monitor_task:
+                    monitor_task.cancel()
+                monitor_task = asyncio.create_task(monitor_userbot_logs(context.bot))
+        else:
+            await context.bot.send_message(
+                chat_id=chosen_result.from_user.id,
+                text="❌ Не удалось перезапустить юзербота через инлайн-режим. Проверьте логи."
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chosen_result.from_user.id,
+            text=f"❌ Ошибка перезапуска через инлайн-режим: {str(e)}"
+        )
 # Инлайн-режим
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_user(update.inline_query.from_user.id):
@@ -1556,8 +2001,73 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.inline_query.query.lower().strip()
     results = []
+    bot_username = context.bot.username
 
-    if query.startswith("ping"):
+    # Статус юзербота
+    if query.startswith("status") or "status" in query:
+        is_running, start_time = get_userbot_status()
+        status_text = "✅ Запущен" if is_running else "❌ Остановлен"
+        if is_running:
+            uptime = time.time() - start_time
+            status_text += f"\nUptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m"
+
+        results.append(InlineQueryResultArticle(
+            id="status",
+            title="Userbot Status",
+            input_message_content=InputTextMessageContent(status_text),
+            description="Статус юзербота"
+        ))
+
+    # Запуск юзербота
+    elif query.startswith("start userbot") and is_owner(update.inline_query.from_user.id):
+        is_running, _ = get_userbot_status()
+        if is_running:
+            status_text = "⚠️ Юзербот уже запущен"
+            results.append(InlineQueryResultArticle(
+                id="start_userbot_already",
+                title="Userbot Already Running",
+                input_message_content=InputTextMessageContent(status_text),
+                description="Юзербот уже запущен"
+            ))
+        else:
+            # Создаем результат, который при выборе запустит юзербота
+            results.append(InlineQueryResultArticle(
+                id="start_userbot",
+                title="Start Userbot",
+                input_message_content=InputTextMessageContent("🔄 Запускаю юзербота..."),
+                description="Запустить юзербота (только для владельца)"
+            ))
+
+    # Перезапуск юзербота
+    elif query.startswith("restart userbot") and is_owner(update.inline_query.from_user.id):
+        results.append(InlineQueryResultArticle(
+            id="restart_userbot",
+            title="Restart Userbot",
+            input_message_content=InputTextMessageContent("🔄 Перезапускаю юзербота..."),
+            description="Перезапустить юзербота (только для владельца)"
+        ))
+
+    # Остановка юзербота
+    elif query.startswith("stop userbot") and is_owner(update.inline_query.from_user.id):
+        is_running, _ = get_userbot_status()
+        if not is_running:
+            status_text = "⚠️ Юзербот уже остановлен"
+            results.append(InlineQueryResultArticle(
+                id="stop_userbot_already",
+                title="Userbot Already Stopped",
+                input_message_content=InputTextMessageContent(status_text),
+                description="Юзербот уже остановлен"
+            ))
+        else:
+            results.append(InlineQueryResultArticle(
+                id="stop_userbot",
+                title="Stop Userbot",
+                input_message_content=InputTextMessageContent("🛑 Останавливаю юзербота..."),
+                description="Остановить юзербота (только для владельца)"
+            ))
+
+    # Ping
+    elif query.startswith("ping"):
         host = query[4:].strip() or "open.spotify.com"
         try:
             process = await asyncio.create_subprocess_shell(
@@ -1581,6 +2091,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description=f"Результат ping: {host}"
         ))
 
+    # Информация о системе
     elif query == "info" or "info" in query:
         info_text = get_system_info()
         results.append(InlineQueryResultArticle(
@@ -1590,16 +2101,24 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Информация о системе"
         ))
 
+    # Аптайм
     elif query == "uptime" or "uptime" in query:
         system_uptime = time.time() - psutil.boot_time()
         uptime_text = f"System: {int(system_uptime // 3600)}h {int((system_uptime % 3600) // 60)}m"
+
+        is_running, start_time = get_userbot_status()
+        if is_running:
+            bot_uptime = time.time() - start_time
+            uptime_text += f"\nUserbot: {int(bot_uptime // 3600)}h {int((bot_uptime % 3600) // 60)}m"
+
         results.append(InlineQueryResultArticle(
             id="uptime",
-            title="System Uptime",
+            title="Uptime",
             input_message_content=InputTextMessageContent(uptime_text),
-            description="Аптайм системы"
+            description="Аптайм системы и юзербота"
         ))
 
+    # RAM информация
     elif query == "ram" or "ram" in query:
         ram = psutil.virtual_memory()
         ram_text = f"RAM: {ram.percent}%\nUsed: {ram.used // (1024**3)} GB\nTotal: {ram.total // (1024**3)} GB"
@@ -1610,6 +2129,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Информация о памяти"
         ))
 
+    # CPU информация
     elif query == "cpu" or "cpu" in query:
         cpu = psutil.cpu_percent(interval=1)
         cpu_text = f"CPU: {cpu}%"
@@ -1620,16 +2140,21 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Загрузка процессора"
         ))
 
-    elif (query == "start-userbot" or "start-userbot" in query) and is_owner(update.inline_query.from_user.id):
-        results.append(InlineQueryResultArticle(
-            id="start-userbot",
-            title="Start Userbot",
-            input_message_content=InputTextMessageContent("/start_userbot"),
-            description="Запустить юзербота"
-        ))
-
+    # Пустой запрос - показываем основные опции
     elif not query:
+        is_running, start_time = get_userbot_status()
+        status_text = "✅ Запущен" if is_running else "❌ Остановлен"
+        if is_running:
+            uptime = time.time() - start_time
+            status_text += f" (Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m)"
+
         results.extend([
+            InlineQueryResultArticle(
+                id="status",
+                title="Userbot Status",
+                input_message_content=InputTextMessageContent(status_text),
+                description="Статус юзербота"
+            ),
             InlineQueryResultArticle(
                 id="info",
                 title="System Info",
@@ -1644,11 +2169,38 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             InlineQueryResultArticle(
                 id="uptime",
-                title="System Uptime",
+                title="Uptime",
                 input_message_content=InputTextMessageContent(f"System: {int((time.time() - psutil.boot_time()) // 3600)}h {int(((time.time() - psutil.boot_time()) % 3600) // 60)}m"),
                 description="Аптайм системы"
             )
         ])
+
+        # Добавляем команды управления для владельца
+        if is_owner(update.inline_query.from_user.id):
+            if is_running:
+                results.extend([
+                    InlineQueryResultArticle(
+                        id="restart_userbot",
+                        title="Restart Userbot",
+                        input_message_content=InputTextMessageContent("🔄 Перезапускаю юзербота..."),
+                        description="Перезапустить юзербота"
+                    ),
+                    InlineQueryResultArticle(
+                        id="stop_userbot",
+                        title="Stop Userbot",
+                        input_message_content=InputTextMessageContent("🛑 Останавливаю юзербота..."),
+                        description="Остановить юзербота"
+                    )
+                ])
+            else:
+                results.append(
+                    InlineQueryResultArticle(
+                        id="start_userbot",
+                        title="Start Userbot",
+                        input_message_content=InputTextMessageContent("🔄 Запускаю юзербота..."),
+                        description="Запустить юзербота"
+                    )
+                )
 
     await update.inline_query.answer(results, cache_time=1)
 
@@ -1701,12 +2253,14 @@ async def main():
     application.add_handler(CommandHandler("debug_userbot", debug_userbot))
     application.add_handler(CommandHandler("get_owner", get_owner))
     application.add_handler(CommandHandler("get_user", get_user))
-
+    application.add_handler(CommandHandler("restart_bot", restart_bot))
+    application.add_handler(CommandHandler("restart_userbot", restart_userbot))
     # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
-
+    application.add_handler(CommandHandler("del_user", del_user))
     # Инлайн-режим
     application.add_handler(InlineQueryHandler(inline_query))
+    application.add_handler(ChosenInlineResultHandler(handle_chosen_inline))
 
     print("Бот запускается...")
 
