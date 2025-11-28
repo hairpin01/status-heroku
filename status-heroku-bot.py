@@ -16,7 +16,7 @@ from telegram.error import TimedOut, NetworkError
 # Конфигурация
 BOT_TOKEN = "ТУТ_BOT_TOKEN"
 OWNER_ID = # ваш айди
-USER_IDS = {}
+USER_IDS = set([])
 USERBOT_DIR = os.path.expanduser("~/Heroku-dev") # поменяйте на свою директорию
 VENV_PYTHON = "/home/alina/.venv/bin/python" # путь до питона
 USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web" # как будет запускатся
