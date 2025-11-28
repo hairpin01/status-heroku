@@ -7,7 +7,7 @@ import psutil
 import tempfile
 import re
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, InlineQueryHandler, CallbackQueryHandler
 )
