@@ -25,17 +25,18 @@ PROXY_CMD = f"{PROXYCHAINS_PATH} {VENV_PYTHON} -m heroku --no-web" # прокс�
 LOG_FILE = os.path.join(USERBOT_DIR, "heroku.log") # логи
 
 
-DEBUG_CHATS = set() # чаты в которых будет делатся дебаг
+# Глобальные переменные
+DEBUG_CHATS = set()
 monitor_task = None
 
-
+# Проверка прав
 def is_owner(user_id):
     return user_id == OWNER_ID
 
 def is_user(user_id):
     return user_id in USER_IDS or is_owner(user_id)
 
-
+# Системные функции
 def get_system_info():
     cpu = psutil.cpu_percent(interval=1)
     ram = psutil.virtual_memory()
@@ -62,7 +63,7 @@ def get_userbot_status():
 
     return False, None
 
-
+# Упрощенный дебаг-режим
 async def send_debug_message(message, bot=None):
     """Отправляет дебаг-сообщение во все чаты с включенным дебагом"""
     if not DEBUG_CHATS:
@@ -78,7 +79,7 @@ async def send_debug_message(message, bot=None):
         except Exception as e:
             print(f"Не удалось отправить дебаг-сообщение в {chat_id}: {e}")
 
-
+# Функции меню
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать главное меню"""
     if not is_user(update.effective_user.id):
@@ -300,6 +301,7 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
 
+# Обработчики кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
     query = update.callback_query
@@ -312,9 +314,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
+    # Основное меню
     if data == "main_menu":
         await show_main_menu(update, context)
 
+    # Статус и информация
     elif data == "status":
         is_running, start_time = get_userbot_status()
         status_text = "✅ Запущен" if is_running else "❌ Остановлен"
@@ -330,7 +334,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="system_info"), InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
         await query.edit_message_text(f"🖥 **Информация о системе:**\n\n{info}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-    # Управление юзерботом, вазилиновое дрисло
+    # Управление юзерботом
     elif data == "start_userbot":
         await start_userbot_callback(update, context)
 
@@ -363,7 +367,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "open_logs_dir":
         await open_logs_dir_callback(update, context)
 
-    # на стройки
+    # Настройки
     elif data == "settings":
         await show_settings_menu(update, context)
 
@@ -393,11 +397,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "list_users":
         await list_users_callback(update, context)
 
-    # помощь (не поможет)
+    # Помощь
     elif data == "help":
         await show_help(update, context)
 
-# функции-обработчики для кнопок
+# Функции-обработчики для кнопок
 async def start_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запуск юзербота через кнопку"""
     query = update.callback_query
@@ -766,10 +770,16 @@ async def execute_terminal_command(update: Update, context: ContextTypes.DEFAULT
     try:
         cmd = commands_map[command]
 
+        # Устанавливаем правильные переменные окружения как в текстовой команде
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
         process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.path.expanduser("~"),
+            env=env
         )
 
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
@@ -787,6 +797,38 @@ async def execute_terminal_command(update: Update, context: ContextTypes.DEFAULT
 
     except asyncio.TimeoutError:
         await query.edit_message_text("⏰ Таймаут выполнения команды")
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+async def open_logs_dir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открытие папки логов через кнопку"""
+    query = update.callback_query
+    await query.edit_message_text("📁 Получаю список файлов...")
+
+    if not os.path.exists(USERBOT_DIR):
+        await query.edit_message_text("❌ Директория юзербота не найдена")
+        return
+
+    try:
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            f"cd {USERBOT_DIR} && ls -la",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            files_list = stdout.decode()[:4000]  # Ограничиваем длину
+            await query.edit_message_text(f"📁 Содержимое папки логов:\n```\n{files_list}\n```", parse_mode='Markdown')
+        else:
+            error_msg = stderr.decode()[:1000] if stderr else "Неизвестная ошибка"
+            await query.edit_message_text(f"❌ Не удалось получить список файлов: {error_msg}")
+
     except Exception as e:
         await query.edit_message_text(f"❌ Ошибка: {str(e)}")
 
@@ -857,43 +899,118 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await show_main_menu(update, context)
 
-async def install_requirements(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Установить зависимости юзербота (оригинальная команда)"""
-    user_id = update.effective_user.id
-
-    if not is_owner(user_id):
-        await update.message.reply_text("❌ Доступ запрещен")
-        return
-
-    await update.message.reply_text("📦 Устанавливаю зависимости...")
+async def install_requirements_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка зависимостей через кнопку"""
+    query = update.callback_query
+    await query.edit_message_text("📦 Устанавливаю зависимости...")
 
     try:
         cmd = f"cd {USERBOT_DIR} && {VENV_PYTHON} -m pip install -r requirements.txt"
+
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
 
         process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=USERBOT_DIR
+            cwd=USERBOT_DIR,
+            env=env
         )
 
         output_lines = []
         async for line in process.stdout:
             line = line.decode().strip()
             output_lines.append(line)
-            if DEBUG_CHATS:
-                await send_debug_message(line, context.bot)
 
         await process.wait()
 
         if process.returncode == 0:
-            await update.message.reply_text("✅ Зависимости установлены успешно!")
+            await query.edit_message_text("✅ Зависимости установлены успешно!")
         else:
             error_output = "\n".join(output_lines[-10:])
-            await update.message.reply_text(f"❌ Ошибка установки:\n{error_output}")
+            await query.edit_message_text(f"❌ Ошибка установки:\n{error_output}")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+    await asyncio.sleep(2)
+    await show_management_menu(update, context)
+
+async def update_heroku_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление HerokuTL через кнопку"""
+    query = update.callback_query
+    await query.edit_message_text("🔄 Обновляю HerokuTL...")
+
+    try:
+        cmd = f"{VENV_PYTHON} -m pip install heroku-tl-new -U"
+
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env
+        )
+
+        output_lines = []
+        async for line in process.stdout:
+            line = line.decode().strip()
+            output_lines.append(line)
+
+        await process.wait()
+
+        if process.returncode == 0:
+            await query.edit_message_text("✅ HerokuTL обновлен успешно!")
+        else:
+            error_output = "\n".join(output_lines[-10:])
+            await query.edit_message_text(f"❌ Ошибка обновления:\n{error_output}")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+    await asyncio.sleep(2)
+    await show_management_menu(update, context)
+
+async def ping_host_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, host: str):
+    """Ping хоста через кнопку"""
+    query = update.callback_query
+    await query.edit_message_text(f"🌐 Пингую {host}...")
+
+    try:
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            f"ping -c 3 {host}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            result = stdout.decode()
+            # Извлекаем время пинга из вывода
+            ping_times = re.findall(r'time=(\d+\.?\d*) ms', result)
+            if ping_times:
+                avg_ping = sum(float(t) for t in ping_times) / len(ping_times)
+                await query.edit_message_text(f"✅ {host} доступен\nСреднее время: {avg_ping:.1f} ms")
+            else:
+                await query.edit_message_text(f"✅ {host} доступен")
+        else:
+            await query.edit_message_text(f"❌ {host} недоступен")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+    await asyncio.sleep(2)
+    await show_ping_menu(update, context)
 
 async def update_heroku(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновить HerokuTL (оригинальная команда)"""
@@ -928,6 +1045,45 @@ async def update_heroku(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             error_output = "\n".join(output_lines[-10:])
             await update.message.reply_text(f"❌ Ошибка обновления:\n{error_output}")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
+async def install_requirements(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить зависимости юзербота"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    await update.message.reply_text("📦 Устанавливаю зависимости...")
+
+    try:
+        cmd = f"cd {USERBOT_DIR} && {VENV_PYTHON} -m pip install -r requirements.txt"
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR
+        )
+
+        output_lines = []
+        async for line in process.stdout:
+            line = line.decode().strip()
+            output_lines.append(line)
+            if DEBUG_CHATS:
+                await send_debug_message(line, context.bot)
+
+        await process.wait()
+
+        if process.returncode == 0:
+            await update.message.reply_text("✅ Зависимости установлены успешно!")
+        else:
+            error_output = "\n".join(output_lines[-10:])
+            await update.message.reply_text(f"❌ Ошибка установки:\n{error_output}")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
