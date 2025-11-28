@@ -7,18 +7,22 @@ import tempfile
 import re
 import asyncio
 import requests
+import socket
+import aiohttp
+from telegram.helpers import escape_markdown
+from aiohttp import ClientError, ClientConnectorError
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, InlineQueryHandler,
     CallbackQueryHandler, ChosenInlineResultHandler )
-from telegram.error import TimedOut, NetworkError
+from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
 # Конфигурация
 BOT_TOKEN = "ТУТ_BOT_TOKEN"
 OWNER_ID = # ваш айди
 USER_IDS = set([])
-BOT_VERSION = "1.0.2"
+BOT_VERSION = "1.0.5"
 USER_IDS_FILE = "users.json"
 GITHUB_REPO = "hairpin01/status-heroku"
 USERBOT_DIR = os.path.expanduser("~/Heroku-dev") # поменяйте на свою директорию
@@ -32,6 +36,18 @@ LOG_FILE = os.path.join(USERBOT_DIR, "heroku.log") # логи
 DEBUG_CHATS = set()
 monitor_task = None
 start_time = time.time()
+reconnect_attempts = 0
+is_reconnecting = True
+application_instance = None
+
+RECONNECT_CONFIG = {
+    'max_retries': float('inf'),  # Бесконечные попытки
+    'retry_delay': 5,
+    'max_delay': 300,  # 5 минут максимальная задержка
+    'backoff_factor': 1.5,
+    'health_check_interval': 10
+    }
+
 
 def load_users():
     """Загружает список пользователей из файла"""
@@ -40,7 +56,6 @@ def load_users():
             with open(USER_IDS_FILE, 'r') as f:
                 return set(json.load(f))
         else:
-            # Создаем файл с владельцем по умолчанию
             default_users = {OWNER_ID}
             save_users(default_users)
             return default_users
@@ -78,7 +93,7 @@ def get_system_info():
     # Информация о сети
     net_io = psutil.net_io_counters()
 
-    # Информация о боте (безопасное получение времени старта)
+    # Информация о боте
     bot_uptime = 0
     bot_start_time = "N/A"
     if 'start_time' in globals():
@@ -240,11 +255,50 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем текущих пользователей перед обновлением
         save_users(USER_IDS)
 
-        # Выполняем git pull для обновления
-        process = await asyncio.create_subprocess_shell(
-            f"cd {os.path.dirname(os.path.abspath(__file__))} && git pull",
+        # Проверяем доступность git
+        git_paths = [
+            "/usr/bin/git",
+            "/usr/local/bin/git",
+            "/bin/git",
+            "/usr/lib/git",
+            "/opt/homebrew/bin/git"  # для macOS
+        ]
+
+        git_cmd = "git"
+        for path in git_paths:
+            if os.path.exists(path):
+                git_cmd = path
+                break
+
+        # Проверяем, есть ли git
+        check_git = await asyncio.create_subprocess_shell(
+            f"{git_cmd} --version",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
+        )
+        await check_git.communicate()
+
+        if check_git.returncode != 0:
+            await context.bot.send_message(
+                chat_id,
+                "❌ Git не установлен или не найден. Установите git:\n"
+                "`sudo apt update && sudo apt install git -y`\n\n"
+                "Или обновите бот вручную:\n"
+                "```bash\n"
+                f"cd {os.path.dirname(os.path.abspath(__file__))}\n"
+                "git pull\n"
+                "```",
+                parse_mode='Markdown'
+            )
+            return
+
+        # Выполняем git pull для обновления
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        process = await asyncio.create_subprocess_shell(
+            f"cd {script_dir} && {git_cmd} pull",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy()  # Используем текущее окружение
         )
 
         stdout, stderr = await process.communicate()
@@ -266,18 +320,88 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(
                 chat_id,
-                f"❌ Ошибка при обновлении:\n```\n{output[:1000]}\n```",
+                f"❌ Ошибка при обновлении:\n```\n{output[:1000]}\n```\n\n"
+                f"Попробуйте обновить вручную:\n"
+                f"```bash\ncd {script_dir} && git pull\n```",
                 parse_mode='Markdown'
             )
 
     except Exception as e:
         await context.bot.send_message(chat_id, f"❌ Ошибка при обновлении: {str(e)}")
 
+
+
+async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню удаления пользователя"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Эта функция доступна только владельцу", show_alert=True)
+        return
+
+    users_list = ["🗑 Удалить пользователя:\n"]
+    for uid in USER_IDS:
+        if uid != OWNER_ID:
+            users_list.append(f"👤 {uid} - /del_user_{uid}")
+
+    if len(users_list) == 1:
+        users_list.append("Нет пользователей для удаления")
+
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="users_menu")]]
+    await query.edit_message_text("\n".join(users_list), reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def delete_specific_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Удаление конкретного пользователя через кнопку"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
+    if user_id in USER_IDS and user_id != OWNER_ID:
+        USER_IDS.remove(user_id)
+        save_users(USER_IDS)
+        await query.answer(f"✅ Пользователь {user_id} удален", show_alert=True)
+        await asyncio.sleep(1)
+        await show_users_menu(update, context)
+    else:
+        await query.answer("❌ Нельзя удалить этого пользователя", show_alert=True)
+
+async def status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статус через кнопку"""
+    query = update.callback_query
+    is_running, start_time = get_userbot_status()
+    status_text = "✅ Запущен" if is_running else "❌ Остановлен"
+    if is_running:
+        uptime = time.time() - start_time
+        status_text += f"\n⏱ Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m"
+
+    keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="status"), InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
+    await query.edit_message_text(f"📊 **Статус юзербота:**\n\n{status_text}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def system_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Информация о системе через кнопку"""
+    query = update.callback_query
+    info = get_system_info()
+    keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="system_info"), InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
+    await query.edit_message_text(f"🖥 **Информация о системе:**\n\n{info}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
 # Функция для получения подробной информации о системе
 async def detailed_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подробная информация о системе"""
     if not is_user(update.effective_user.id):
         return
+
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        chat_id = update.callback_query.message.chat_id
+        message_id = update.callback_query.message.message_id
+    else:
+        chat_id = update.message.chat_id
+        message_id = None
 
     # Информация о процессах
     processes = []
@@ -325,7 +449,11 @@ async def detailed_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message += f"\n🤖 **Юзербот:** Остановлен"
 
-    await update.message.reply_text(message, parse_mode='Markdown')
+    # Отправляем сообщение
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message, parse_mode='Markdown')
 
 
 
@@ -377,7 +505,12 @@ async def send_debug_message(message, bot=None):
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать главное меню"""
     if not is_user(update.effective_user.id):
-        return
+        if update.callback_query:
+            await update.callback_query.answer("❌ У вас нет доступа к этому боту", show_alert=True)
+            return
+        else:
+            await update.message.reply_text("❌ У вас нет доступа к этому боту")
+            return
 
     keyboard = [
         [
@@ -393,10 +526,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📋 Логи", callback_data="logs_menu")
         ],
         [
-            InlineKeyboardButton("🔄 Обновления", callback_data="updates_menu"),
-            InlineKeyboardButton("⚙️ Настройки", callback_data="settings")
+            InlineKeyboardButton("🌐 Соединение", callback_data="connection_status"),
+            InlineKeyboardButton("🔄 Обновления", callback_data="updates_menu")
         ],
         [
+            InlineKeyboardButton("⚙️ Настройки", callback_data="settings"),
             InlineKeyboardButton("❓ Помощь", callback_data="help")
         ]
     ]
@@ -415,16 +549,21 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def show_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню управления"""
+async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню настроек"""
+    debug_status = "✅ Включен" if update.effective_chat.id in DEBUG_CHATS else "❌ Выключен"
+
     keyboard = [
         [
-            InlineKeyboardButton("📦 Установить зависимости", callback_data="install_requirements"),
-            InlineKeyboardButton("🔄 Обновить HerokuTL", callback_data="update_heroku")
+            InlineKeyboardButton(f"🔍 Дебаг: {debug_status}", callback_data="toggle_debug")
         ],
         [
-            InlineKeyboardButton("🚀 Запуск с прокси", callback_data="start_proxy"),
-            InlineKeyboardButton("🐞 Диагностика", callback_data="debug_userbot")
+            InlineKeyboardButton("🌐 Статус соединения", callback_data="connection_status"),
+            InlineKeyboardButton("🖥 Терминал", callback_data="terminal_menu")
+        ],
+        [
+            InlineKeyboardButton("🌐 Ping", callback_data="ping_menu"),
+            InlineKeyboardButton("👥 Пользователи", callback_data="users_menu")
         ],
         [
             InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
@@ -433,7 +572,7 @@ async def show_management_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.callback_query.edit_message_text(
-        "🔧 **Меню управления**\n\nДополнительные функции управления юзерботом:",
+        f"⚙️ **Меню настроек**\n\nТекущие настройки:\n- Дебаг-режим: {debug_status}",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -655,15 +794,16 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
-            await context.bot.send_message(chat_id, "✅ Бот перезапускается...")
+            await safe_send_message(context.bot, chat_id, "✅ Бот перезапускается...")
         else:
             # Если systemd не сработал, просто выходим и надеемся на перезапуск
-            await context.bot.send_message(chat_id, "⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
+            await safe_send_message(context.bot, chat_id, "⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
+            # Используем sys.exit только если systemd недоступен
             import sys
             sys.exit(0)
 
     except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ Ошибка перезапуска: {str(e)}")
+        await safe_send_message(context.bot, chat_id, f"❌ Ошибка перезапуска: {str(e)}")
         import sys
         sys.exit(1)
 
@@ -704,10 +844,12 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /status - Статус юзербота
 /info - Информация о системе
 /detailed_info - Подробная информация
+/connection_status - Статус соединения (с кнопкой обновления)
 
 **Обновления:**
 /check_updates - Проверить обновления
 /update_bot - Обновить бота
+/install_git - Установить git (если не установлен)
 
 **Управление:**
 /install_requirements - Установить зависимости
@@ -757,18 +899,280 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Технологии:** Python, python-telegram-bot, psutil"
     )
 
-    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="show_updates_menu")]]
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
     await query.edit_message_text(about_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def connection_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус соединения бота с кнопкой обновления"""
+    user_id = update.effective_user.id
+
+    if not is_user(user_id):
+        if update.callback_query:
+            await update.callback_query.answer("❌ У вас нет доступа к этому боту", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        message = update.callback_query.message
+        chat_id = message.chat_id
+        message_id = message.message_id
+        is_callback = True
+    else:
+        chat_id = update.message.chat_id
+        message_id = None
+        is_callback = False
+
+    # Показываем "Проверяем..." при обновлении
+    if is_callback:
+        try:
+            await update.callback_query.edit_message_text("🔍 Проверяем соединение...")
+        except Exception as e:
+            print(f"Ошибка при обновлении сообщения: {e}")
+
+    try:
+        # Проверяем соединение с Telegram API
+        start_time = time.time()
+        try:
+            bot_info = await asyncio.wait_for(context.bot.get_me(), timeout=10)
+            api_response_time = (time.time() - start_time) * 1000  # в миллисекундах
+
+            # Дополнительные проверки
+            start_time_ping = time.time()
+            ping_process = await asyncio.create_subprocess_shell(
+                "ping -c 1 api.telegram.org",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await ping_process.communicate()
+            ping_time = (time.time() - start_time_ping) * 1000
+
+            # Получаем информацию о системе
+            cpu_usage = psutil.cpu_percent(interval=0.1)
+            memory_usage = psutil.virtual_memory().percent
+
+            # Определяем качество соединения
+            if api_response_time < 500:
+                connection_quality = "🚀 Отличное"
+            elif api_response_time < 1000:
+                connection_quality = "✅ Хорошее"
+            elif api_response_time < 2000:
+                connection_quality = "⚠️ Медленное"
+            else:
+                connection_quality = "❌ Плохое"
+
+            # Форматируем сообщение БЕЗ Markdown
+            status_message = (
+                "🌐 Статус соединения\n\n"
+                "🤖 Информация о боте:\n"
+                f"• Имя: {bot_info.first_name}\n"
+                f"• Юзернейм: @{bot_info.username if bot_info.username else 'N/A'}\n"
+                f"• ID: {bot_info.id}\n\n"
+
+                "📊 Производительность:\n"
+                f"• Время ответа API: {api_response_time:.0f} мс\n"
+                f"• Ping до Telegram: {ping_time:.0f} мс\n"
+                f"• Качество соединения: {connection_quality}\n"
+                f"• Загрузка CPU: {cpu_usage:.1f}%\n"
+                f"• Использование RAM: {memory_usage:.1f}%\n\n"
+
+                "🔄 Статистика переподключений:\n"
+                f"• Попыток переподключения: {reconnect_attempts}\n"
+                "• Статус: ✅ Онлайн и стабильный"
+            )
+
+        except asyncio.TimeoutError:
+            status_message = (
+                "🌐 Статус соединения\n\n"
+                "❌ Таймаут при проверке соединения:\n"
+                "• Не удалось получить ответ от Telegram API за 10 секунд\n"
+                f"• Попыток переподключения: {reconnect_attempts}\n\n"
+
+                "🔄 Автоматическое восстановление:\n"
+                "Бот пытается восстановить соединение.\n"
+                "Следующая попытка через несколько секунд."
+            )
+
+    except Exception as e:
+        status_message = (
+            "🌐 Статус соединения\n\n"
+            "⚠️ Неизвестная ошибка:\n"
+            f"• Ошибка: {str(e)}\n"
+            f"• Попыток переподключения: {reconnect_attempts}\n\n"
+
+            "🔄 Рекомендации:\n"
+            "1. Проверьте интернет-соединение\n"
+            "2. Убедитесь, что бот запущен\n"
+            "3. Попробуйте перезапустить бота"
+        )
+
+    # Создаем клавиатуру с кнопками
+    keyboard = [
+        [InlineKeyboardButton("🔄 Проверить снова", callback_data="connection_status")],
+        [
+            InlineKeyboardButton("📊 Система", callback_data="system_info"),
+            InlineKeyboardButton("🤖 Юзербот", callback_data="status")
+        ],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Отправляем или обновляем сообщение БЕЗ parse_mode
+    try:
+        if is_callback:
+            await update.callback_query.edit_message_text(
+                status_message,
+                reply_markup=reply_markup
+            )
+        else:
+            await update.message.reply_text(
+                status_message,
+                reply_markup=reply_markup
+            )
+    except Exception as e:
+        # Если возникает ошибка, пытаемся отправить максимально простое сообщение
+        error_message = "Не удалось отобразить статус соединения. Попробуйте еще раз."
+        if is_callback:
+            await update.callback_query.edit_message_text(error_message)
+        else:
+            await update.message.reply_text(error_message)
+        print(f"Ошибка при отправке статуса соединения: {e}")
+
+async def check_telegram_connection(bot):
+    """Проверяет соединение с Telegram API"""
+    try:
+        await asyncio.wait_for(bot.get_me(), timeout=10)
+        return True
+    except (asyncio.TimeoutError, Exception):
+        return False
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Глобальный обработчик ошибок"""
+    error = context.error
+
+    # Логируем ошибку
+    print(f"Произошла ошибка: {error}")
+
+    # Обрабатываем разные типы ошибок
+    if isinstance(error, BadRequest):
+        if "Can't parse entities" in str(error):
+            print("Ошибка разбора Markdown. Проверьте форматирование сообщений.")
+        elif "Message is not modified" in str(error):
+            # Игнорируем эту ошибку - сообщение не изменилось
+            return
+    elif isinstance(error, TimedOut):
+        print("Таймаут запроса к Telegram API")
+    elif isinstance(error, NetworkError):
+        print("Ошибка сети при подключении к Telegram API")
+
+    # Отправляем сообщение об ошибке пользователю, если это возможно
+    try:
+        if update and update.effective_chat:
+            error_message = (
+                "⚠️ Произошла ошибка при обработке запроса.\n"
+                "Попробуйте еще раз или обратитесь к администратору."
+            )
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=error_message
+            )
+    except Exception as e:
+        print(f"Не удалось отправить сообщение об ошибке: {e}")
+
+
+async def force_connection_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принудительная проверка соединения"""
+    user_id = update.effective_user.id
+
+    if not is_user(user_id):
+        if update.callback_query:
+            await update.callback_query.answer("❌ У вас нет доступа к этому боту", show_alert=True)
+        else:
+            await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    # Определяем, откуда пришел запрос
+    if update.callback_query:
+        message = update.callback_query.message
+        chat_id = message.chat_id
+        is_callback = True
+    else:
+        chat_id = update.message.chat_id
+        is_callback = False
+
+    await safe_send_message(context.bot, chat_id, "🔍 Принудительно проверяю соединение...")
+
+    # Выполняем проверки
+    internet_status = await check_internet_connection()
+    telegram_status = await check_telegram_connection(context.bot)
+
+    if internet_status and telegram_status:
+        status_message = "✅ Все проверки пройдены!\n• Интернет: Доступен\n• Telegram API: Доступен"
+    elif internet_status and not telegram_status:
+        status_message = "⚠️ Проблемы с Telegram\n• Интернет: Доступен\n• Telegram API: Недоступен"
+    elif not internet_status and telegram_status:
+        status_message = "❌ Нет интернета\n• Интернет: Недоступен\n• Telegram API: Доступен"
+    else:
+        status_message = "💥 Критический сбой\n• Интернет: Недоступен\n• Telegram API: Недоступен"
+
+    # Добавляем информацию о переподключениях
+    status_message += f"\n\n📊 Статистика:\n• Попыток переподключения: {reconnect_attempts}"
+
+    if connection_lost_time:
+        downtime = time.time() - connection_lost_time
+        status_message += f"\n• Соединение потеряно: {int(downtime)} сек. назад"
+
+    keyboard = [
+        [InlineKeyboardButton("🔄 Проверить снова", callback_data="force_connection_check")],
+        [InlineKeyboardButton("🌐 Статус соединения", callback_data="connection_status")],
+        [InlineKeyboardButton("⬅️ Главное меню", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if is_callback:
+        await update.callback_query.edit_message_text(status_message, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(status_message, reply_markup=reply_markup)
+
+async def send_connection_status_update(bot, status, downtime=None):
+    """Отправляет обновление статуса соединения всем пользователям"""
+    message_map = {
+        'lost': "❌ Потеряно соединение с интернетом!\n\nБот пытается восстановить подключение...",
+        'restored': f"✅ Соединение восстановлено!\n\nВремя простоя: {int(downtime)} секунд",
+        'degraded': "⚠️ Проблемы с соединением Telegram\n\nБот работает в ограниченном режиме"
+    }
+
+    message = message_map.get(status, "❓ Неизвестный статус соединения")
+
+    for user_id in USER_IDS.copy():
+        try:
+            await safe_send_message(bot, user_id, message)
+        except Exception as e:
+            print(f"Не удалось отправить уведомление о соединении пользователю {user_id}: {e}")
+
 
 async def check_updates_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка обновлений через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.answer()
     await check_updates(update, context)
 
 async def update_bot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновление бота через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.answer()
     await update_bot(update, context)
 
@@ -801,6 +1205,158 @@ async def show_updates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+async def show_management_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню управления"""
+    query = update.callback_query
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📦 Установить зависимости", callback_data="install_requirements"),
+            InlineKeyboardButton("🔄 Обновить HerokuTL", callback_data="update_heroku")
+        ],
+        [
+            InlineKeyboardButton("🚀 Запуск с прокси", callback_data="start_proxy"),
+            InlineKeyboardButton("🐞 Диагностика", callback_data="debug_userbot")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "🔧 Меню управления\n\nДополнительные функции управления юзерботом:",
+        reply_markup=reply_markup
+    )
+
+async def install_requirements_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка зависимостей через кнопку"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Эта функция доступна только владельцу", show_alert=True)
+        return
+
+    await query.edit_message_text("📦 Устанавливаю зависимости...")
+
+    try:
+        cmd = f"cd {USERBOT_DIR} && {VENV_PYTHON} -m pip install -r requirements.txt"
+
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        output_lines = []
+        async for line in process.stdout:
+            line = line.decode().strip()
+            output_lines.append(line)
+
+        await process.wait()
+
+        if process.returncode == 0:
+            await query.edit_message_text("✅ Зависимости установлены успешно!")
+        else:
+            error_output = "\n".join(output_lines[-10:])
+            await query.edit_message_text(f"❌ Ошибка установки:\n{error_output}")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+    await asyncio.sleep(2)
+    await show_management_menu(update, context)
+
+async def update_heroku_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление HerokuTL через кнопку"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Эта функция доступна только владельцу", show_alert=True)
+        return
+
+    await query.edit_message_text("🔄 Обновляю HerokuTL...")
+
+    try:
+        cmd = f"{VENV_PYTHON} -m pip install heroku-tl-new -U"
+
+        # Устанавливаем правильные переменные окружения
+        env = os.environ.copy()
+        env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/alina/.venv/bin:/home/alina/.local/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env
+        )
+
+        output_lines = []
+        async for line in process.stdout:
+            line = line.decode().strip()
+            output_lines.append(line)
+
+        await process.wait()
+
+        if process.returncode == 0:
+            await query.edit_message_text("✅ HerokuTL обновлен успешно!")
+        else:
+            error_output = "\n".join(output_lines[-10:])
+            await query.edit_message_text(f"❌ Ошибка обновления:\n{error_output}")
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+
+    await asyncio.sleep(2)
+    await show_management_menu(update, context)
+
+async def debug_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика юзербота через кнопку"""
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Эта функция доступна только владельцу", show_alert=True)
+        return
+
+    await query.edit_message_text("🐞 Выполняю диагностику...")
+
+    diagnostic_messages = []
+
+    if os.path.exists(VENV_PYTHON):
+        diagnostic_messages.append("✅ Виртуальное окружение найдено")
+    else:
+        diagnostic_messages.append("❌ Виртуальное окружение не найдено")
+
+    if os.path.exists(USERBOT_DIR):
+        diagnostic_messages.append("✅ Директория юзербота найдена")
+    else:
+        diagnostic_messages.append("❌ Директория юзербота не найдена")
+
+    is_running, start_time = get_userbot_status()
+    if is_running:
+        uptime = time.time() - start_time
+        diagnostic_messages.append(f"✅ Юзербот запущен (Uptime: {int(uptime // 60)}m {int(uptime % 60)}s)")
+    else:
+        diagnostic_messages.append("❌ Юзербот не запущен")
+
+    log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+    if os.path.exists(log_file_path):
+        file_size = os.path.getsize(log_file_path)
+        diagnostic_messages.append(f"✅ Файл логов существует ({file_size} bytes)")
+    else:
+        diagnostic_messages.append("❌ Файл логов не существует")
+
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="management")]]
+    await query.edit_message_text("\n".join(diagnostic_messages), reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Обработчики кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -810,7 +1366,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     if not is_user(user_id):
-        await query.edit_message_text("❌ Доступ запрещен")
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
         return
 
     data = query.data
@@ -886,8 +1442,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await open_logs_dir_callback(update, context)
 
     # Настройки
+    elif data == "connection_status":
+        await connection_status(update, context)
+
     elif data == "updates_menu":
         await show_updates_menu(update, context)
+
     elif data == "check_updates":
         await check_updates_callback(update, context)
 
@@ -937,6 +1497,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запуск юзербота через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text("🔄 Запускаю юзербота...")
 
     is_running, _ = get_userbot_status()
@@ -983,6 +1549,12 @@ async def start_userbot_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def start_userbot_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запуск юзербота с прокси через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text("🔄 Запускаю юзербота с прокси...")
 
     if not os.path.exists(PROXYCHAINS_PATH):
@@ -1031,9 +1603,272 @@ async def start_userbot_proxy_callback(update: Update, context: ContextTypes.DEF
     await asyncio.sleep(2)
     await show_main_menu(update, context)
 
+
+
+
+async def handle_chosen_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает выбранные инлайн-результаты"""
+    chosen_result = update.chosen_inline_result
+    result_id = chosen_result.result_id
+    user_id = chosen_result.from_user.id
+
+    if not is_owner(user_id):
+        return
+
+    try:
+        # Запуск юзербота
+        if result_id == "start_userbot":
+            await execute_inline_start_userbot(chosen_result, context)
+
+        # Остановка юзербота
+        elif result_id == "stop_userbot":
+            await execute_inline_stop_userbot(chosen_result, context)
+
+        # Перезапуск юзербота
+        elif result_id == "restart_userbot":
+            await execute_inline_restart_userbot(chosen_result, context)
+
+    except Exception as e:
+        print(f"Ошибка в handle_chosen_inline: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"❌ Ошибка при выполнении инлайн-команды: {str(e)}"
+            )
+        except:
+            pass
+
+async def execute_inline_start_userbot(chosen_result, context):
+    """Выполняет запуск юзербота из инлайн-режима"""
+    user_id = chosen_result.from_user.id
+
+    # Отправляем уведомление о начале операции
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="🔄 Запускаю юзербота через инлайн-режим..."
+    )
+
+    # Проверяем, не запущен ли уже юзербот
+    is_running, _ = get_userbot_status()
+    if is_running:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="⚠️ Юзербот уже запущен"
+        )
+        return
+
+    try:
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['GIT_PYTHON_REFRESH'] = 'quiet'
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Юзербот успешно запущен через инлайн-режим!"
+            )
+
+            global monitor_task
+            if DEBUG_CHATS:
+                if monitor_task:
+                    monitor_task.cancel()
+                monitor_task = asyncio.create_task(monitor_userbot_logs(context.bot))
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ Не удалось запустить юзербота через инлайн-режим. Проверьте логи."
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"❌ Ошибка запуска через инлайн-режим: {str(e)}"
+        )
+
+async def execute_inline_stop_userbot(chosen_result, context):
+    """Выполняет остановку юзербота из инлайн-режима"""
+    user_id = chosen_result.from_user.id
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="🛑 Останавливаю юзербота через инлайн-режим..."
+    )
+
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            cmdline_str = ' '.join(cmdline).lower()
+            if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+
+    if not processes:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="⚠️ Юзербот не был запущен"
+        )
+        return
+
+    for proc in processes:
+        try:
+            proc.terminate()
+        except:
+            pass
+
+    timeout = 15
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        await asyncio.sleep(2)
+        still_running = []
+        for proc in processes:
+            try:
+                if proc.is_running():
+                    still_running.append(proc)
+            except:
+                pass
+
+        if not still_running:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Юзербот корректно остановлен через инлайн-режим"
+            )
+            return
+
+        processes = still_running
+
+    for proc in processes:
+        try:
+            proc.kill()
+        except:
+            pass
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="✅ Юзербот остановлен (принудительно) через инлайн-режим"
+    )
+
+async def execute_inline_restart_userbot(chosen_result, context):
+    """Выполняет перезапуск юзербота из инлайн-режима"""
+    user_id = chosen_result.from_user.id
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="🔄 Перезапускаю юзербота через инлайн-режим..."
+    )
+
+    # Сначала останавливаем
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            cmdline_str = ' '.join(cmdline).lower()
+            if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+
+    if processes:
+        for proc in processes:
+            try:
+                proc.terminate()
+            except:
+                pass
+
+        # Ждем завершения
+        timeout = 10
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(2)
+            still_running = []
+            for proc in processes:
+                try:
+                    if proc.is_running():
+                        still_running.append(proc)
+                except:
+                    pass
+
+            if not still_running:
+                break
+
+            processes = still_running
+
+        # Если процессы все еще работают, убиваем принудительно
+        for proc in processes:
+            try:
+                proc.kill()
+            except:
+                pass
+
+    # Запускаем заново
+    try:
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['GIT_PYTHON_REFRESH'] = 'quiet'
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Юзербот успешно перезапущен через инлайн-режим!"
+            )
+
+            global monitor_task
+            if DEBUG_CHATS:
+                if monitor_task:
+                    monitor_task.cancel()
+                monitor_task = asyncio.create_task(monitor_userbot_logs(context.bot))
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ Не удалось перезапустить юзербота через инлайн-режим. Проверьте логи."
+            )
+
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"❌ Ошибка перезапуска через инлайн-режим: {str(e)}"
+        )
+
+
+
+
+
 async def stop_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Остановка юзербота через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
     await query.edit_message_text("🛑 Останавливаю юзербота...")
 
     processes = []
@@ -1091,6 +1926,11 @@ async def stop_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def install_requirements_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Установка зависимостей через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
     await query.edit_message_text("📦 Устанавливаю зависимости...")
 
     try:
@@ -1125,6 +1965,12 @@ async def install_requirements_callback(update: Update, context: ContextTypes.DE
 async def update_heroku_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновление HerokuTL через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text("🔄 Обновляю HerokuTL...")
 
     try:
@@ -1158,6 +2004,12 @@ async def update_heroku_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def debug_userbot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Диагностика юзербота через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text("🐞 Выполняю диагностику...")
 
     diagnostic_messages = []
@@ -1192,6 +2044,12 @@ async def debug_userbot_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def send_logs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, level: str):
     """Отправка логов через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text(f"📋 Подготавливаю логи уровня {level}...")
 
     if not os.path.exists(LOG_FILE):
@@ -1244,6 +2102,11 @@ async def send_logs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def open_logs_dir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открытие папки логов через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
 
     if not os.path.exists(USERBOT_DIR):
         await query.edit_message_text("❌ Директория юзербота не найдена")
@@ -1270,6 +2133,11 @@ async def toggle_debug_callback(update: Update, context: ContextTypes.DEFAULT_TY
     """Переключение дебаг-режима через кнопку"""
     query = update.callback_query
     chat_id = query.message.chat_id
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
 
     if chat_id in DEBUG_CHATS:
         DEBUG_CHATS.discard(chat_id)
@@ -1335,6 +2203,12 @@ async def execute_terminal_command(update: Update, context: ContextTypes.DEFAULT
 async def open_logs_dir_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Открытие папки логов через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text("📁 Получаю список файлов...")
 
     if not os.path.exists(USERBOT_DIR):
@@ -1367,6 +2241,12 @@ async def open_logs_dir_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def ping_host_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, host: str):
     """Ping хоста через кнопку"""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     await query.edit_message_text(f"🌐 Пингую {host}...")
 
     try:
@@ -1400,6 +2280,10 @@ async def add_me_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
 
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
+
     if user_id == OWNER_ID:
         await query.edit_message_text("❌ Вы уже являетесь владельцем")
         return
@@ -1417,9 +2301,9 @@ async def list_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     users_list = ["👥 Список пользователей:"]
     users_list.append(f"👑 Владелец: {OWNER_ID}")
 
-    for user_id in USER_IDS:
-        if user_id != OWNER_ID:
-            users_list.append(f"👤 Пользователь: {user_id}")
+    for uid in USER_IDS:
+        if uid != OWNER_ID:
+            users_list.append(f"👤 Пользователь: {uid}")
 
     users_list.append(f"\nВсего: {len(USER_IDS)} пользователей")
 
@@ -1429,7 +2313,6 @@ async def list_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     await query.edit_message_text("\n".join(users_list), reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Оригинальные функции команд (для обработки текстовых команд)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_user(update.effective_user.id):
         return
@@ -1516,6 +2399,11 @@ async def ping_host_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Ping хоста через кнопку"""
     query = update.callback_query
     await query.edit_message_text(f"🌐 Пингую {host}...")
+    user_id = query.from_user.id
+
+    if not is_owner(user_id):
+        await query.answer("❌ Нильзя жмакать на эти кнопачки", show_alert=True)
+        return
 
     try:
         # Устанавливаем правильные переменные окружения
@@ -1945,6 +2833,238 @@ async def logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
+async def safe_send_message(bot, chat_id, text, **kwargs):
+    """Безопасная отправка сообщения с обработкой ошибок сети и форматирования"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Пробуем отправить с указанным parse_mode
+            await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            return True
+        except BadRequest as e:
+            if "Can't parse entities" in str(e):
+                # Если ошибка форматирования, пробуем без разметки
+                if 'parse_mode' in kwargs:
+                    kwargs_without_markdown = kwargs.copy()
+                    kwargs_without_markdown.pop('parse_mode', None)
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=text, **kwargs_without_markdown)
+                        return True
+                    except Exception as fallback_error:
+                        print(f"Ошибка при отправке без разметки: {fallback_error}")
+                        return False
+            elif "Message is not modified" in str(e):
+                # Игнорируем эту ошибку
+                return True
+            else:
+                print(f"BadRequest при отправке сообщения: {e}")
+                return False
+        except (TimedOut, NetworkError) as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"Ошибка сети при отправке сообщения, попытка {attempt + 1}/{max_retries}. Жду {wait_time} сек.")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"Не удалось отправить сообщение после {max_retries} попыток: {e}")
+                return False
+        except Exception as e:
+            print(f"Неожиданная ошибка при отправке сообщения: {e}")
+            return False
+    return False
+
+async def handle_network_errors(func, *args, **kwargs):
+    """Обработчик сетевых ошибок для любых функций"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return await func(*args, **kwargs)
+        except (TimedOut, NetworkError) as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"Сетевая ошибка в {func.__name__}, попытка {attempt + 1}/{max_retries}. Жду {wait_time} сек.")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"Не удалось выполнить {func.__name__} после {max_retries} попыток: {e}")
+                raise
+        except RetryAfter as e:
+            wait_time = e.retry_after
+            print(f"Telegram просит подождать {wait_time} сек. перед повторной попыткой.")
+            await asyncio.sleep(wait_time)
+            if attempt < max_retries - 1:
+                continue
+            else:
+                raise
+        except BadRequest as e:
+            print(f"Некорректный запрос в {func.__name__}: {e}")
+            raise
+
+async def send_startup_notification(application):
+    """Отправляет уведомление о запуске бота с обработкой ошибок"""
+    try:
+        # Используем asyncio.wait_for вместо handle_network_errors
+        bot_info = await asyncio.wait_for(application.bot.get_me(), timeout=10)
+        message = f"🤖 Бот {bot_info.first_name} запущен и готов к работе!\n\n" \
+                 f"Используйте /start для просмотра команд"
+
+        sent_count = 0
+        for user_id in USER_IDS.copy():
+            try:
+                success = await safe_send_message(application.bot, user_id, message)
+                if success:
+                    sent_count += 1
+                    print(f"Уведомление отправлено пользователю {user_id}")
+                else:
+                    print(f"Не удалось отправить уведомление пользователю {user_id}")
+            except Exception as e:
+                print(f"Ошибка при отправке уведомления пользователю {user_id}: {e}")
+
+        print(f"Уведомления отправлены {sent_count} пользователям из {len(USER_IDS)}")
+    except asyncio.TimeoutError:
+        print("Таймаут при получении информации о боте для уведомления о запуске")
+    except Exception as e:
+        print(f"Ошибка при отправке уведомлений: {e}")
+
+async def check_connection_health(bot):
+    """Проверяет здоровье соединения с Telegram"""
+    try:
+        # Простая проверка - получаем информацию о боте
+        await handle_network_errors(bot.get_me, timeout=10)
+        return True
+    except Exception as e:
+        print(f"Проверка соединения не удалась: {e}")
+        return False
+
+async def restart_application(application):
+    """Безопасно перезапускает приложение"""
+    global reconnect_attempts, is_reconnecting
+
+    if is_reconnecting:
+        print("Переподключение уже выполняется...")
+        return
+
+    is_reconnecting = True
+
+    try:
+        print("Останавливаю приложение...")
+        if application.updater and application.updater.running:
+            await application.updater.stop()
+
+        if application.running:
+            await application.stop()
+
+        if application.running:
+            await application.shutdown()
+
+        print("Запускаю приложение заново...")
+        await application.initialize()
+        await application.start()
+
+        if application.updater:
+            await application.updater.start_polling(
+                poll_interval=1.0,
+                timeout=10.0,
+                drop_pending_updates=True
+            )
+
+        # Сбрасываем счетчик попыток при успешном переподключении
+        reconnect_attempts = 0
+        print("Приложение успешно перезапущено!")
+
+        # Отправляем уведомление о восстановлении соединения
+        await send_reconnection_notification(application)
+
+    except Exception as e:
+        print(f"Ошибка при перезапуске приложения: {e}")
+        reconnect_attempts += 1
+    finally:
+        is_reconnecting = False
+
+
+async def connection_watchdog(application):
+    """Фоновая задача для мониторинга соединения"""
+    global application_instance
+    application_instance = application
+
+    check_interval = 200  # Проверяем соединение каждые 30 секунд
+    consecutive_failures = 0
+    max_consecutive_failures = 3
+
+    while True:
+        try:
+            await asyncio.sleep(check_interval)
+
+            is_healthy = await check_connection_health(application.bot)
+
+            if is_healthy:
+                consecutive_failures = 0
+                continue
+
+            consecutive_failures += 1
+            print(f"Проблемы с соединением. Неудачных проверок подряд: {consecutive_failures}")
+
+            if consecutive_failures >= max_consecutive_failures:
+                print("Критическое количество неудачных проверок. Инициирую переподключение...")
+                await restart_application(application)
+                consecutive_failures = 0
+
+        except Exception as e:
+            print(f"Ошибка в connection_watchdog: {e}")
+            consecutive_failures += 1
+
+async def robust_polling(application):
+    """Устойчивый запуск polling с обработкой ошибок"""
+    global reconnect_attempts
+
+    while reconnect_attempts < RECONNECT_CONFIG['max_retries']:
+        try:
+            print("Запускаю polling...")
+            await application.updater.start_polling(
+                poll_interval=1.0,
+                timeout=20.0,  # Увеличиваем таймаут
+                drop_pending_updates=True
+            )
+
+            # Если polling запущен успешно, сбрасываем счетчик
+            reconnect_attempts = 0
+            print("Polling успешно запущен!")
+
+            # Запускаем watchdog для мониторинга соединения
+            asyncio.create_task(connection_watchdog(application))
+
+            # Бесконечный цикл ожидания
+            while True:
+                await asyncio.sleep(3600)
+
+        except (TimedOut, NetworkError) as e:
+            reconnect_attempts += 1
+            current_delay = min(
+                RECONNECT_CONFIG['retry_delay'] * (RECONNECT_CONFIG['backoff_factor'] ** (reconnect_attempts - 1)),
+                RECONNECT_CONFIG['max_delay']
+            )
+
+            print(f"Сетевая ошибка при polling (попытка {reconnect_attempts}/{RECONNECT_CONFIG['max_retries']}): {e}")
+            print(f"Повторная попытка через {current_delay} сек.")
+
+            await asyncio.sleep(current_delay)
+
+        except Exception as e:
+            print(f"Критическая ошибка при polling: {e}")
+            reconnect_attempts += 1
+
+            if reconnect_attempts >= RECONNECT_CONFIG['max_retries']:
+                print("Достигнуто максимальное количество попыток. Завершаю работу.")
+                raise
+
+            current_delay = min(
+                RECONNECT_CONFIG['retry_delay'] * (RECONNECT_CONFIG['backoff_factor'] ** (reconnect_attempts - 1)),
+                RECONNECT_CONFIG['max_delay']
+            )
+
+            print(f"Повторная попытка через {current_delay} сек.")
+            await asyncio.sleep(current_delay)
+
+
+
 async def start_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Включить дебаг-режим"""
     user_id = update.effective_user.id
@@ -2336,10 +3456,9 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.inline_query.query.lower().strip()
     results = []
-    bot_username = context.bot.username
 
     # Статус юзербота
-    if query.startswith("status") or "status" in query:
+    if query.startswith("status") or "status" in query or not query:
         is_running, start_time = get_userbot_status()
         status_text = "✅ Запущен" if is_running else "❌ Остановлен"
         if is_running:
@@ -2353,81 +3472,39 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Статус юзербота"
         ))
 
-    # Запуск юзербота
-    elif query.startswith("start userbot") and is_owner(update.inline_query.from_user.id):
+    # Запуск юзербота (только для владельца)
+    if (query.startswith("start") or "start" in query or not query) and is_owner(update.inline_query.from_user.id):
         is_running, _ = get_userbot_status()
-        if is_running:
-            status_text = "⚠️ Юзербот уже запущен"
-            results.append(InlineQueryResultArticle(
-                id="start_userbot_already",
-                title="Userbot Already Running",
-                input_message_content=InputTextMessageContent(status_text),
-                description="Юзербот уже запущен"
-            ))
-        else:
-            # Создаем результат, который при выборе запустит юзербота
+        if not is_running:
             results.append(InlineQueryResultArticle(
                 id="start_userbot",
                 title="Start Userbot",
                 input_message_content=InputTextMessageContent("🔄 Запускаю юзербота..."),
-                description="Запустить юзербота (только для владельца)"
+                description="Запустить юзербота"
             ))
 
-    # Перезапуск юзербота
-    elif query.startswith("restart userbot") and is_owner(update.inline_query.from_user.id):
-        results.append(InlineQueryResultArticle(
-            id="restart_userbot",
-            title="Restart Userbot",
-            input_message_content=InputTextMessageContent("🔄 Перезапускаю юзербота..."),
-            description="Перезапустить юзербота (только для владельца)"
-        ))
-
-    # Остановка юзербота
-    elif query.startswith("stop userbot") and is_owner(update.inline_query.from_user.id):
+    # Остановка юзербота (только для владельца)
+    if (query.startswith("stop") or "stop" in query or not query) and is_owner(update.inline_query.from_user.id):
         is_running, _ = get_userbot_status()
-        if not is_running:
-            status_text = "⚠️ Юзербот уже остановлен"
-            results.append(InlineQueryResultArticle(
-                id="stop_userbot_already",
-                title="Userbot Already Stopped",
-                input_message_content=InputTextMessageContent(status_text),
-                description="Юзербот уже остановлен"
-            ))
-        else:
+        if is_running:
             results.append(InlineQueryResultArticle(
                 id="stop_userbot",
                 title="Stop Userbot",
                 input_message_content=InputTextMessageContent("🛑 Останавливаю юзербота..."),
-                description="Остановить юзербота (только для владельца)"
+                description="Остановить юзербота"
             ))
 
-    # Ping
-    elif query.startswith("ping"):
-        host = query[4:].strip() or "open.spotify.com"
-        try:
-            process = await asyncio.create_subprocess_shell(
-                f"ping -c 1 {host}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                status_text = f"✅ {host} доступен"
-            else:
-                status_text = f"❌ {host} недоступен"
-        except:
-            status_text = f"❌ Ошибка ping для {host}"
-
+    # Перезапуск юзербота (только для владельца)
+    if (query.startswith("restart") or "restart" in query) and is_owner(update.inline_query.from_user.id):
         results.append(InlineQueryResultArticle(
-            id="ping",
-            title=f"Ping {host}",
-            input_message_content=InputTextMessageContent(status_text),
-            description=f"Результат ping: {host}"
+            id="restart_userbot",
+            title="Restart Userbot",
+            input_message_content=InputTextMessageContent("🔄 Перезапускаю юзербота..."),
+            description="Перезапустить юзербота"
         ))
 
     # Информация о системе
-    elif query == "info" or "info" in query:
+    if query.startswith("info") or "info" in query or not query:
         info_text = get_system_info()
         results.append(InlineQueryResultArticle(
             id="info",
@@ -2436,108 +3513,16 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Информация о системе"
         ))
 
-    # Аптайм
-    elif query == "uptime" or "uptime" in query:
-        system_uptime = time.time() - psutil.boot_time()
-        uptime_text = f"System: {int(system_uptime // 3600)}h {int((system_uptime % 3600) // 60)}m"
-
-        is_running, start_time = get_userbot_status()
-        if is_running:
-            bot_uptime = time.time() - start_time
-            uptime_text += f"\nUserbot: {int(bot_uptime // 3600)}h {int((bot_uptime % 3600) // 60)}m"
-
+    # Если нет результатов для запроса, показываем основные опции
+    if not results and query:
         results.append(InlineQueryResultArticle(
-            id="uptime",
-            title="Uptime",
-            input_message_content=InputTextMessageContent(uptime_text),
-            description="Аптайм системы и юзербота"
+            id="no_results",
+            title="Ничего не найдено",
+            input_message_content=InputTextMessageContent(f"❌ Не найдено команд для: {query}"),
+            description="Попробуйте другую команду"
         ))
 
-    # RAM информация
-    elif query == "ram" or "ram" in query:
-        ram = psutil.virtual_memory()
-        ram_text = f"RAM: {ram.percent}%\nUsed: {ram.used // (1024**3)} GB\nTotal: {ram.total // (1024**3)} GB"
-        results.append(InlineQueryResultArticle(
-            id="ram",
-            title="RAM Info",
-            input_message_content=InputTextMessageContent(ram_text),
-            description="Информация о памяти"
-        ))
-
-    # CPU информация
-    elif query == "cpu" or "cpu" in query:
-        cpu = psutil.cpu_percent(interval=1)
-        cpu_text = f"CPU: {cpu}%"
-        results.append(InlineQueryResultArticle(
-            id="cpu",
-            title="CPU Info",
-            input_message_content=InputTextMessageContent(cpu_text),
-            description="Загрузка процессора"
-        ))
-
-    # Пустой запрос - показываем основные опции
-    elif not query:
-        is_running, start_time = get_userbot_status()
-        status_text = "✅ Запущен" if is_running else "❌ Остановлен"
-        if is_running:
-            uptime = time.time() - start_time
-            status_text += f" (Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m)"
-
-        results.extend([
-            InlineQueryResultArticle(
-                id="status",
-                title="Userbot Status",
-                input_message_content=InputTextMessageContent(status_text),
-                description="Статус юзербота"
-            ),
-            InlineQueryResultArticle(
-                id="info",
-                title="System Info",
-                input_message_content=InputTextMessageContent(get_system_info()),
-                description="Информация о системе"
-            ),
-            InlineQueryResultArticle(
-                id="ping",
-                title="Ping open.spotify.com",
-                input_message_content=InputTextMessageContent("Проверка доступности..."),
-                description="Проверить доступность"
-            ),
-            InlineQueryResultArticle(
-                id="uptime",
-                title="Uptime",
-                input_message_content=InputTextMessageContent(f"System: {int((time.time() - psutil.boot_time()) // 3600)}h {int(((time.time() - psutil.boot_time()) % 3600) // 60)}m"),
-                description="Аптайм системы"
-            )
-        ])
-
-        # Добавляем команды управления для владельца
-        if is_owner(update.inline_query.from_user.id):
-            if is_running:
-                results.extend([
-                    InlineQueryResultArticle(
-                        id="restart_userbot",
-                        title="Restart Userbot",
-                        input_message_content=InputTextMessageContent("🔄 Перезапускаю юзербота..."),
-                        description="Перезапустить юзербота"
-                    ),
-                    InlineQueryResultArticle(
-                        id="stop_userbot",
-                        title="Stop Userbot",
-                        input_message_content=InputTextMessageContent("🛑 Останавливаю юзербота..."),
-                        description="Остановить юзербота"
-                    )
-                ])
-            else:
-                results.append(
-                    InlineQueryResultArticle(
-                        id="start_userbot",
-                        title="Start Userbot",
-                        input_message_content=InputTextMessageContent("🔄 Запускаю юзербота..."),
-                        description="Запустить юзербота"
-                    )
-                )
-
-    await update.inline_query.answer(results, cache_time=1)
+    await update.inline_query.answer(results, cache_time=1, is_personal=True)
 
 # Функция для отправки уведомлений при запуске
 async def send_startup_notification(application):
@@ -2545,7 +3530,7 @@ async def send_startup_notification(application):
     try:
         bot_info = await application.bot.get_me()
         message = f"🤖 Бот {bot_info.first_name} запущен и готов к работе!\n\n" \
-                 f"Используйте /start для просмотра команд"
+                 f"Используйте /menu для просмотра меню"
 
         for user_id in USER_IDS:
             try:
@@ -2558,6 +3543,10 @@ async def send_startup_notification(application):
 
 async def main():
     """Главная асинхронная функция"""
+    global application_instance
+
+    print("Инициализация бота...")
+
     application = Application.builder()\
         .token(BOT_TOKEN)\
         .connect_timeout(30.0)\
@@ -2566,14 +3555,19 @@ async def main():
         .pool_timeout(30.0)\
         .build()
 
-    # Добавляем обработчики команд
+    application_instance = application
+
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", show_main_menu))
     application.add_handler(CommandHandler("start_userbot", start_userbot))
     application.add_handler(CommandHandler("stop_userbot", stop_userbot))
+    application.add_handler(CommandHandler("restart_userbot", restart_userbot))
+    application.add_handler(CommandHandler("restart_bot", restart_bot))
     application.add_handler(CommandHandler("install_requirements", install_requirements))
     application.add_handler(CommandHandler("update_heroku", update_heroku))
     application.add_handler(CommandHandler("info", system_info))
+    application.add_handler(CommandHandler("detailed_info", detailed_info))
     application.add_handler(CommandHandler("ram", ram_info))
     application.add_handler(CommandHandler("cpu", cpu_info))
     application.add_handler(CommandHandler("disk", disk_info))
@@ -2588,45 +3582,60 @@ async def main():
     application.add_handler(CommandHandler("debug_userbot", debug_userbot))
     application.add_handler(CommandHandler("get_owner", get_owner))
     application.add_handler(CommandHandler("get_user", get_user))
-    application.add_handler(CommandHandler("restart_bot", restart_bot))
-    application.add_handler(CommandHandler("restart_userbot", restart_userbot))
+    application.add_handler(CommandHandler("del_user", del_user))
     application.add_handler(CommandHandler("check_updates", check_updates))
     application.add_handler(CommandHandler("update_bot", update_bot))
-    application.add_handler(CommandHandler("detailed_info", detailed_info))
+    application.add_handler(CommandHandler("connection_status", connection_status))
+
+
+
     # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(CommandHandler("del_user", del_user))
+
     # Инлайн-режим
     application.add_handler(InlineQueryHandler(inline_query))
+
+    # Обработчик выбранных инлайн-результатов
     application.add_handler(ChosenInlineResultHandler(handle_chosen_inline))
+
+    application.add_error_handler(error_handler)
+
 
     print("Бот запускается...")
 
     try:
         await application.initialize()
         await application.start()
-        await application.updater.start_polling(
-            poll_interval=1.0,
-            timeout=10.0,
-            drop_pending_updates=True
-        )
 
-        await send_startup_notification(application)
-        print("Бот успешно запущен!")
+        # Загружаем пользователей при старте
+        global USER_IDS
+        USER_IDS = load_users()
+        print(f"Загружено {len(USER_IDS)} пользователей")
 
-        # Бесконечный цикл ожидания
-        while True:
-            await asyncio.sleep(3600)  # Спим 1 час
+        # Используем улучшенный polling
+        await robust_polling(application)
 
     except (TimedOut, NetworkError) as e:
-        print(f"Ошибка подключения: {e}")
+        print(f"Критическая ошибка подключения: {e}")
+        print("Попытка переподключения через 60 секунд...")
+        await asyncio.sleep(60)
+        # Рекурсивный перезапуск
+        await main()
+
     except Exception as e:
         print(f"Критическая ошибка: {e}")
+        print("Перезапуск через 60 секунд...")
+        await asyncio.sleep(60)
+        await main()
+
     finally:
-        if application.running:
-            await application.stop()
-        if application.updater.running:
-            await application.updater.stop()
+        try:
+            if application.running:
+                await application.stop()
+            if application.updater and application.updater.running:
+                await application.updater.stop()
+        except Exception as e:
+            print(f"Ошибка при завершении работы: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
