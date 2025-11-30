@@ -15,7 +15,8 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, InlineQueryHandler,
-    CallbackQueryHandler, ChosenInlineResultHandler )
+    CallbackQueryHandler, ChosenInlineResultHandler, MessageHandler, filters
+)
 from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
 # Конфигурация
@@ -40,6 +41,11 @@ reconnect_attempts = 0
 is_reconnecting = True
 application_instance = None
 
+debug_message_buffer = []
+debug_buffer_lock = asyncio.Lock()
+debug_buffer_size = 5  # Количество сообщений в одном буфере
+debug_buffer_timeout = 3  # Секунды перед отправкой буфера
+
 RECONNECT_CONFIG = {
     'max_retries': float('inf'),  # Бесконечные попытки
     'retry_delay': 5,
@@ -48,7 +54,6 @@ RECONNECT_CONFIG = {
     'health_check_interval': 10
     }
 
-
 def load_users():
     """Загружает список пользователей из файла"""
     try:
@@ -56,6 +61,7 @@ def load_users():
             with open(USER_IDS_FILE, 'r') as f:
                 return set(json.load(f))
         else:
+            # Создаем файл с владельцем по умолчанию
             default_users = {OWNER_ID}
             save_users(default_users)
             return default_users
@@ -93,7 +99,7 @@ def get_system_info():
     # Информация о сети
     net_io = psutil.net_io_counters()
 
-    # Информация о боте
+    # Информация о боте 
     bot_uptime = 0
     bot_start_time = "N/A"
     if 'start_time' in globals():
@@ -125,6 +131,55 @@ def get_system_info():
 
     return info
 
+async def send_debug_message(message, bot=None):
+    """Буферизирует и отправляет дебаг-сообщения группами"""
+    if not DEBUG_CHATS or not bot:
+        return
+
+    async with debug_buffer_lock:
+        debug_message_buffer.append(message)
+
+        # Если буфер заполнен или это первое сообщение, запускаем таймер отправки
+        if len(debug_message_buffer) >= debug_buffer_size:
+            await flush_debug_buffer(bot)
+        elif len(debug_message_buffer) == 1:
+            # Запускаем отложенную отправку для первого сообщения
+            asyncio.create_task(delayed_flush(bot))
+
+async def delayed_flush(bot):
+    """Отложенная отправка буфера"""
+    await asyncio.sleep(debug_buffer_timeout)
+    async with debug_buffer_lock:
+        if debug_message_buffer:
+            await flush_debug_buffer(bot)
+
+async def flush_debug_buffer(bot):
+    """Отправляет текущий буфер сообщений"""
+    if not debug_message_buffer:
+        return
+
+    # Объединяем сообщения
+    combined_message = "\n".join(debug_message_buffer)
+
+    # Ограничиваем длину
+    if len(combined_message) > 4000:
+        combined_message = combined_message[:4000] + "..."
+
+    # Отправляем во все дебаг-чаты
+    for chat_id in DEBUG_CHATS.copy():
+        try:
+            await bot.send_message(chat_id=chat_id, text=f"🔍 Логи:\n{combined_message}")
+        except Exception as e:
+            print(f"Не удалось отправить дебаг-сообщение в {chat_id}: {e}")
+
+    # Очищаем буфер
+    debug_message_buffer.clear()
+
+async def force_flush_debug_buffer(bot):
+    """Принудительно отправляет буфер при завершении работы"""
+    async with debug_buffer_lock:
+        if debug_message_buffer:
+            await flush_debug_buffer(bot)
 
 # Системные функции
 def get_system_info():
@@ -261,7 +316,7 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/usr/local/bin/git",
             "/bin/git",
             "/usr/lib/git",
-            "/opt/homebrew/bin/git"  # для macOS
+            "/opt/homebrew/bin/git" 
         ]
 
         git_cmd = "git"
@@ -722,12 +777,6 @@ async def restart_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if not still_running:
                 break
-
-            processes = still_running
-
-        # Если процессы все еще работают, убиваем принудительно
-        for proc in processes:
-            try:
                 proc.kill()
             except:
                 pass
@@ -3181,6 +3230,10 @@ async def monitor_userbot_logs(bot):
         return
 
     last_position = 0
+    buffer = []
+    buffer_size = 10  # Количество строк в одном сообщении
+    last_flush_time = time.time()
+    flush_interval = 5  # Секунды между отправками
 
     while True:
         try:
@@ -3196,11 +3249,26 @@ async def monitor_userbot_logs(bot):
                 for line in new_lines:
                     line = line.strip()
                     if line:
-                        await send_debug_message(line, bot)
+                        buffer.append(line)
+
+                        # Отправляем если буфер заполнен или прошло достаточно времени
+                        current_time = time.time()
+                        if (len(buffer) >= buffer_size or
+                            current_time - last_flush_time >= flush_interval):
+                            if buffer:
+                                combined = "\n".join(buffer[-buffer_size:])  # Берем последние N строк
+                                await send_debug_message(combined, bot)
+                                buffer.clear()
+                                last_flush_time = current_time
 
             is_running, _ = get_userbot_status()
             if not is_running:
-                await send_debug_message("🔴 Юзербот завершил работу", bot)
+                # При завершении отправляем оставшиеся логи
+                if buffer:
+                    combined = "\n".join(buffer)
+                    await send_debug_message(f"🔴 Юзербот завершил работу\nПоследние логи:\n{combined}", bot)
+                else:
+                    await send_debug_message("🔴 Юзербот завершил работу", bot)
                 break
 
             await asyncio.sleep(2)
@@ -3208,6 +3276,8 @@ async def monitor_userbot_logs(bot):
         except Exception as e:
             print(f"Ошибка чтения логов: {e}")
             await asyncio.sleep(5)
+
+
 async def handle_chosen_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает выбранные инлайн-результаты"""
     chosen_result = update.chosen_inline_result
@@ -3547,6 +3617,7 @@ async def main():
 
     print("Инициализация бота...")
 
+    # Создаем application
     application = Application.builder()\
         .token(BOT_TOKEN)\
         .connect_timeout(30.0)\
@@ -3557,7 +3628,7 @@ async def main():
 
     application_instance = application
 
-
+    # Добавление обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", show_main_menu))
     application.add_handler(CommandHandler("start_userbot", start_userbot))
@@ -3588,7 +3659,6 @@ async def main():
     application.add_handler(CommandHandler("connection_status", connection_status))
 
 
-
     # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
 
@@ -3600,42 +3670,68 @@ async def main():
 
     application.add_error_handler(error_handler)
 
-
     print("Бот запускается...")
 
     try:
+        # Инициализируем приложение
         await application.initialize()
+
+        # Запускаем приложение
         await application.start()
+        print("Бот успешно запущен")
 
         # Загружаем пользователей при старте
         global USER_IDS
         USER_IDS = load_users()
         print(f"Загружено {len(USER_IDS)} пользователей")
 
-        # Используем улучшенный polling
-        await robust_polling(application)
+        # Запускаем polling
+        await application.updater.start_polling(
+            poll_interval=1.0,
+            timeout=20.0,
+            drop_pending_updates=True
+        )
+        print("Polling запущен")
 
-    except (TimedOut, NetworkError) as e:
-        print(f"Критическая ошибка подключения: {e}")
-        print("Попытка переподключения через 60 секунд...")
-        await asyncio.sleep(60)
-        # Рекурсивный перезапуск
-        await main()
+        # Отправляем уведомление о запуске
+        await send_startup_notification(application)
+
+        # Бесконечный цикл для поддержания работы бота
+        while True:
+            await asyncio.sleep(3600)  # Спим 1 час
 
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
-        print("Перезапуск через 60 секунд...")
-        await asyncio.sleep(60)
-        await main()
+        print(f"Критическая ошибка в main: {e}")
+        # Ждем перед перезапуском
+        await asyncio.sleep(10)
 
     finally:
+        print("Завершаем работу бота...")
         try:
-            if application.running:
-                await application.stop()
+            # Останавливаем updater
             if application.updater and application.updater.running:
                 await application.updater.stop()
+
+            # Останавливаем приложение
+            if application.running:
+                await application.stop()
+
+            # Завершаем работу приложения
+            if hasattr(application, '_initialized') and application._initialized:
+                await application.shutdown()
+
         except Exception as e:
             print(f"Ошибка при завершении работы: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        import sys
+        # Запускаем главную функцию
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен пользователем")
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        # Перезапускаем через systemd
+        sys.exit(1)
+
