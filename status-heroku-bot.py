@@ -21,7 +21,7 @@ from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
 # Конфигурация
 BOT_TOKEN = "ТУТ_BOT_TOKEN"
-OWNER_ID = # ваш айди
+OWNER_ID = ""  # ваш айди
 USER_IDS = set([])
 BOT_VERSION = "1.0.5"
 USER_IDS_FILE = "users.json"
