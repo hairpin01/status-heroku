@@ -416,7 +416,7 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, message_text, parse_mode='Markdown')
 
 async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновить бота с GitHub"""
+    """Обновить бота с GitHub через raw ссылку"""
     user_id = update.effective_user.id
 
     if not is_owner(user_id):
@@ -426,32 +426,38 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
+    # Определяем, откуда пришел запрос
     if update.callback_query:
-        message = await update.callback_query.message.reply_text("🔄 Начинаю обновление бота...")
-        chat_id = message.chat_id
+        # Редактируем существующее сообщение
+        message = await update.callback_query.edit_message_text("🔄 Начинаю обновление бота...")
+        chat_id = update.callback_query.message.chat_id
+        message_id = update.callback_query.message.message_id
+        is_callback = True
     else:
-        await update.message.reply_text("🔄 Начинаю обновление бота...")
-        chat_id = update.message.chat_id
+        message = await update.message.reply_text("🔄 Начинаю обновление бота...")
+        chat_id = message.chat_id
+        message_id = message.message_id
+        is_callback = False
 
     try:
-
+        # Сохраняем текущих пользователей перед обновлением
         save_users(USER_IDS)
 
-
+        # Получаем текущий путь к файлу бота
         current_file = os.path.abspath(__file__)
         backup_file = current_file + ".backup"
 
-
+        # Создаем временный файл для нового кода
         temp_file = current_file + ".new"
 
         # Скачиваем новый код по raw ссылке
-        await context.bot.send_message(chat_id, "📥 Скачиваю обновление...")
+        await edit_message_progress(update, context, message_id, "📥 Скачиваю обновление...")
 
         try:
             response = requests.get(GITHUB_RAW_URL, timeout=30)
             response.raise_for_status()
         except Exception as e:
-            await context.bot.send_message(chat_id, f"❌ Ошибка загрузки обновления: {str(e)}")
+            await edit_message_progress(update, context, message_id, f"❌ Ошибка загрузки обновления: {str(e)}")
             return
 
         # Сохраняем новый код во временный файл
@@ -459,7 +465,7 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f.write(response.text)
 
         # Проверяем синтаксис нового кода
-        await context.bot.send_message(chat_id, "🔍 Проверяю синтаксис...")
+        await edit_message_progress(update, context, message_id, "🔍 Проверяю синтаксис...")
         try:
             check_result = subprocess.run(
                 [VENV_PYTHON, "-m", "py_compile", temp_file],
@@ -470,28 +476,27 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if check_result.returncode != 0:
                 error_msg = check_result.stderr[:500] if check_result.stderr else "Неизвестная ошибка синтаксиса"
-                await context.bot.send_message(
-                    chat_id,
-                    f"❌ Ошибка синтаксиса в новом коде:\n```\n{error_msg}\n```",
-                    parse_mode='Markdown'
+                await edit_message_progress(
+                    update, context, message_id,
+                    f"❌ Ошибка синтаксиса в новом коде:\n```\n{error_msg}\n```"
                 )
                 os.remove(temp_file)
                 return
         except Exception as e:
-            await context.bot.send_message(chat_id, f"❌ Ошибка проверки синтаксиса: {str(e)}")
+            await edit_message_progress(update, context, message_id, f"❌ Ошибка проверки синтаксиса: {str(e)}")
             os.remove(temp_file)
             return
 
         # Создаем резервную копию текущего файла
-        await context.bot.send_message(chat_id, "💾 Создаю резервную копию...")
+        await edit_message_progress(update, context, message_id, "💾 Создаю резервную копию...")
         try:
             import shutil
             shutil.copy2(current_file, backup_file)
         except Exception as e:
-            await context.bot.send_message(chat_id, f"⚠️ Не удалось создать резервную копию: {str(e)}")
+            await edit_message_progress(update, context, message_id, f"⚠️ Не удалось создать резервную копию: {str(e)}")
 
         # Заменяем текущий файл новым
-        await context.bot.send_message(chat_id, "🔄 Применяю обновление...")
+        await edit_message_progress(update, context, message_id, "🔄 Применяю обновление...")
         try:
             # Закрываем все файловые дескрипторы перед заменой
             import sys
@@ -509,25 +514,36 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(backup_file):
                 try:
                     os.replace(backup_file, current_file)
-                    await context.bot.send_message(chat_id, "🔄 Восстановлен из резервной копии")
+                    await edit_message_progress(update, context, message_id, "🔄 Восстановлен из резервной копии")
                 except:
                     pass
 
-            await context.bot.send_message(chat_id, f"❌ Ошибка применения обновления: {str(e)}")
+            await edit_message_progress(update, context, message_id, f"❌ Ошибка применения обновления: {str(e)}")
             return
 
-        await context.bot.send_message(
-            chat_id,
-            "✅ Бот успешно обновлен!\n\n"
-            "Перезапускаю бота..."
-        )
+        # Обновляем сообщение с кнопкой перезапуска
+        keyboard = [
+            [InlineKeyboardButton("🔄 Перезапустить бота", callback_data="restart_bot")],
+            [InlineKeyboardButton("⬅️ В меню", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Перезапускаем бота
-        await restart_bot(update, context)
+        if is_callback:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="✅ Бот успешно обновлен!\n\nНажмите кнопку для перезапуска:",
+                reply_markup=reply_markup
+            )
+        else:
+            await context.bot.send_message(
+                chat_id,
+                "✅ Бот успешно обновлен!\n\nНажмите кнопку для перезапуска:",
+                reply_markup=reply_markup
+            )
 
     except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ Ошибка при обновлении: {str(e)}")
-
+        await edit_message_progress(update, context, message_id, f"❌ Ошибка при обновлении: {str(e)}")
 
 
 async def delete_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
