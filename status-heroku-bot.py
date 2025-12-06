@@ -308,7 +308,7 @@ def get_userbot_status():
     return False, None
 
 async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверить обновления бота на pornohub"""
+    """Проверить обновления бота на GitHub"""
     user_id = update.effective_user.id
 
     if not is_owner(user_id):
@@ -318,14 +318,21 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
+    # Определяем, откуда пришел запрос
     if update.callback_query:
-        message = await update.callback_query.message.reply_text("🔍 Проверяю обновления на GitHub...")
-        chat_id = message.chat_id
+        # Редактируем существующее сообщение
+        message = await update.callback_query.edit_message_text("🔍 Проверяю обновления на GitHub...")
+        chat_id = update.callback_query.message.chat_id
+        message_id = update.callback_query.message.message_id
+        is_callback = True
     else:
-        await update.message.reply_text("🔍 Проверяю обновления на GitHub...")
-        chat_id = update.message.chat_id
+        message = await update.message.reply_text("🔍 Проверяю обновления на GitHub...")
+        chat_id = message.chat_id
+        message_id = message.message_id
+        is_callback = False
 
     try:
+        # Получаем информацию о последнем релизе
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         response = requests.get(url, timeout=10)
 
@@ -337,17 +344,25 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             published_at = latest_release['published_at']
 
             if latest_version != BOT_VERSION:
-                message = (
+                message_text = (
                     f"🔄 **Доступно обновление!**\n\n"
                     f"• Текущая версия: `{BOT_VERSION}`\n"
                     f"• Новая версия: `{latest_version}`\n"
                     f"• Релиз: {release_name}\n"
                     f"• Опубликован: {published_at[:10]}\n\n"
                     f"**Что нового:**\n{release_notes}\n\n"
-                    f"Для обновления используйте /update_bot"
+                    f"Для обновления используйте кнопку ниже"
                 )
+
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Обновить бота", callback_data="update_bot")],
+                    [InlineKeyboardButton("⬅️ Назад", callback_data="updates_menu")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
             else:
-                message = f"✅ **Бот обновлен до последней версии** `{BOT_VERSION}`"
+                message_text = f"✅ **Бот обновлен до последней версии** `{BOT_VERSION}`"
+                keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="updates_menu")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
 
         elif response.status_code == 404:
             # Если нет релизов, проверяем последний коммит
@@ -362,7 +377,7 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     commit_message = latest_commit['commit']['message']
                     commit_date = latest_commit['commit']['committer']['date']
 
-                    message = (
+                    message_text = (
                         f"📝 **Информация о репозитории:**\n\n"
                         f"• Текущая версия: `{BOT_VERSION}`\n"
                         f"• Последний коммит: `{commit_hash}`\n"
@@ -371,18 +386,34 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Релизы не найдены, но есть новые коммиты."
                     )
                 else:
-                    message = "❌ Не удалось получить информацию о коммитах"
+                    message_text = "❌ Не удалось получить информацию о коммитах"
             else:
-                message = f"❌ Ошибка при запросе к GitHub: {response.status_code}"
+                message_text = f"❌ Ошибка при запросе к GitHub: {response.status_code}"
         else:
-            message = f"❌ Ошибка при проверке обновлений: {response.status_code}"
+            message_text = f"❌ Ошибка при проверке обновлений: {response.status_code}"
 
     except requests.exceptions.RequestException as e:
-        message = f"❌ Ошибка сети при проверке обновлений: {str(e)}"
+        message_text = f"❌ Ошибка сети при проверке обновлений: {str(e)}"
     except Exception as e:
-        message = f"❌ Неожиданная ошибка: {str(e)}"
+        message_text = f"❌ Неожиданная ошибка: {str(e)}"
 
-    await context.bot.send_message(chat_id, message, parse_mode='Markdown')
+    # Отправляем или редактируем сообщение
+    if is_callback:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message_text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup if 'reply_markup' in locals() else None
+            )
+        except Exception as e:
+            print(f"Ошибка редактирования сообщения: {e}")
+    else:
+        if 'reply_markup' in locals():
+            await context.bot.send_message(chat_id, message_text, parse_mode='Markdown', reply_markup=reply_markup)
+        else:
+            await context.bot.send_message(chat_id, message_text, parse_mode='Markdown')
 
 async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обновить бота с GitHub"""
