@@ -416,7 +416,7 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, message_text, parse_mode='Markdown')
 
 async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновить бота с GitHub через raw ссылку"""
+    """Обновить бота с GitHub"""
     user_id = update.effective_user.id
 
     if not is_owner(user_id):
@@ -987,11 +987,13 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Определяем, откуда пришел запрос
     if update.callback_query:
-        message = await update.callback_query.message.reply_text("🔄 Перезапускаю бота...")
-        chat_id = message.chat_id
+        message = await update.callback_query.edit_message_text("🔄 Перезапускаю бота...")
+        chat_id = update.callback_query.message.chat_id
+        is_callback = True
     else:
         await update.message.reply_text("🔄 Перезапускаю бота...")
         chat_id = update.message.chat_id
+        is_callback = False
 
     try:
         # Пытаемся перезапустить через systemd
@@ -1003,16 +1005,24 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
-            await safe_send_message(context.bot, chat_id, "✅ Бот перезапускается...")
+            if is_callback:
+                await update.callback_query.edit_message_text("✅ Бот перезапускается...")
+            else:
+                await context.bot.send_message(chat_id, "✅ Бот перезапускается...")
         else:
-            # Если systemd не сработал, просто выходим и надеемся на перезапуск
-            await safe_send_message(context.bot, chat_id, "⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
-            # Используем sys.exit только если systemd недоступен
+            # Если systemd не сработал, просто выходим
+            if is_callback:
+                await update.callback_query.edit_message_text("⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
+            else:
+                await context.bot.send_message(chat_id, "⚠️ Перезапуск через systemd не удался. Пытаюсь перезапуститься...")
             import sys
             sys.exit(0)
 
     except Exception as e:
-        await safe_send_message(context.bot, chat_id, f"❌ Ошибка перезапуска: {str(e)}")
+        if is_callback:
+            await update.callback_query.edit_message_text(f"❌ Ошибка перезапуска: {str(e)}")
+        else:
+            await context.bot.send_message(chat_id, f"❌ Ошибка перезапуска: {str(e)}")
         import sys
         sys.exit(1)
 
