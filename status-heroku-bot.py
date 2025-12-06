@@ -19,21 +19,64 @@ from telegram.ext import (
 )
 from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
-# Конфигурация
-BOT_TOKEN = "ТУТ_BOT_TOKEN"
-OWNER_ID = ""  # ваш айди
-USER_IDS = set([])
-BOT_VERSION = "1.0.5"
-USER_IDS_FILE = "users.json"
-GITHUB_REPO = "hairpin01/status-heroku"
-USERBOT_DIR = os.path.expanduser("~/Heroku-dev") # поменяйте на свою директорию
-VENV_PYTHON = "/home/alina/.venv/bin/python" # путь до питона
-USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web" # как будет запускатся
-PROXYCHAINS_PATH = "/usr/bin/proxychains" # прокси если есть
-PROXY_CMD = f"{PROXYCHAINS_PATH} {VENV_PYTHON} -m heroku --no-web" # проксе
-LOG_FILE = os.path.join(USERBOT_DIR, "heroku.log") # логи
+# Загрузка конфигурации
+def load_config():
+    """Загружает конфигурацию из файла config.json"""
+    config_path = "config.json"
+    default_config = {
+        "BOT_TOKEN": "",
+        "OWNER_ID": "",
+        "USERBOT_DIR": os.path.expanduser("~/Heroku-dev"),
+        "VENV_PYTHON": "/home/alina/.venv/bin/python",
+        "PROXYCHAINS_PATH": "/usr/bin/proxychains",
+        "GITHUB_REPO": "hairpin01/status-heroku",
+        "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
+        "BOT_VERSION": "1.0.6",
+        "USER_IDS_FILE": "users.json",
+        "LOG_FILE": "heroku.log"
+    }
+
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                # Обновляем недостающие значения по умолчанию
+                for key in default_config:
+                    if key not in config:
+                        config[key] = default_config[key]
+                return config
+        else:
+            # Создаем файл конфигурации с значениями по умолчанию
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+            print(f"Создан файл конфигурации: {config_path}")
+            print("Пожалуйста, заполните BOT_TOKEN и OWNER_ID в config.json")
+            return default_config
+    except Exception as e:
+        print(f"Ошибка загрузки конфигурации: {e}")
+        return default_config
+
+# Загружаем конфигурацию
+CONFIG = load_config()
+
+# Инициализация переменных из конфигурации
+BOT_TOKEN = CONFIG["BOT_TOKEN"]
+OWNER_ID = CONFIG["OWNER_ID"]
+USERBOT_DIR = CONFIG["USERBOT_DIR"]
+VENV_PYTHON = CONFIG["VENV_PYTHON"]
+PROXYCHAINS_PATH = CONFIG["PROXYCHAINS_PATH"]
+GITHUB_REPO = CONFIG["GITHUB_REPO"]
+GITHUB_RAW_URL = CONFIG["GITHUB_RAW_URL"]
+BOT_VERSION = CONFIG["BOT_VERSION"]
+USER_IDS_FILE = CONFIG["USER_IDS_FILE"]
+LOG_FILE = os.path.join(USERBOT_DIR, CONFIG["LOG_FILE"])
+
+# Команды для запуска
+USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web"
+PROXY_CMD = f"{PROXYCHAINS_PATH} {VENV_PYTHON} -m heroku --no-web"
 
 # Глобальные переменные
+USER_IDS = set()
 DEBUG_CHATS = set()
 monitor_task = None
 start_time = time.time()
@@ -41,51 +84,55 @@ reconnect_attempts = 0
 is_reconnecting = True
 application_instance = None
 
-# буфер
+# Буфер для дебаг-сообщений
 debug_message_buffer = []
 debug_buffer_lock = asyncio.Lock()
-debug_buffer_size = 5  # Количество сообщений в одном буфере
-debug_buffer_timeout = 3  # Секунды перед отправкой буфера
+debug_buffer_size = 5
+debug_buffer_timeout = 3
 
+# Конфигурация переподключения
 RECONNECT_CONFIG = {
-    'max_retries': float('inf'),  # Бесконечные попытки
+    'max_retries': float('inf'),
     'retry_delay': 5,
-    'max_delay': 300,  # 5 минут максимальная задержка
+    'max_delay': 300,
     'backoff_factor': 1.5,
     'health_check_interval': 10
-    }
+}
 
 def load_users():
     """Загружает список пользователей из файла"""
+    global USER_IDS
     try:
         if os.path.exists(USER_IDS_FILE):
             with open(USER_IDS_FILE, 'r') as f:
-                return set(json.load(f))
+                USER_IDS = set(json.load(f))
         else:
             # Создаем файл с владельцем по умолчанию
-            default_users = {OWNER_ID}
-            save_users(default_users)
-            return default_users
+            USER_IDS = {OWNER_ID} if OWNER_ID else set()
+            save_users(USER_IDS)
     except Exception as e:
         print(f"Ошибка загрузки пользователей: {e}")
-        return {OWNER_ID}
+        USER_IDS = {OWNER_ID} if OWNER_ID else set()
 
 def save_users(users):
     """Сохраняет список пользователей в файл"""
+    global USER_IDS
     try:
         with open(USER_IDS_FILE, 'w') as f:
             json.dump(list(users), f)
+        USER_IDS = users
     except Exception as e:
         print(f"Ошибка сохранения пользователей: {e}")
 
+# Загружаем пользователей при старте
+load_users()
 
-USER_IDS = load_users()
 # Проверка прав
 def is_owner(user_id):
-    return user_id == OWNER_ID
+    return str(user_id) == str(OWNER_ID)
 
 def is_user(user_id):
-    return user_id in USER_IDS or is_owner(user_id)
+    return str(user_id) in [str(uid) for uid in USER_IDS] or is_owner(user_id)
 
 def get_system_info():
     cpu = psutil.cpu_percent(interval=1)
