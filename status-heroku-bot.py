@@ -176,6 +176,49 @@ def get_system_info():
 
     return info
 
+async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
+    """Безопасное редактирование сообщения"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                **kwargs
+            )
+            return True
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                return True
+            elif "Can't parse entities" in str(e):
+                if 'parse_mode' in kwargs:
+                    kwargs.pop('parse_mode', None)
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=text,
+                            **kwargs
+                        )
+                        return True
+                    except Exception:
+                        return False
+            else:
+                return False
+        except (TimedOut, NetworkError) as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                return False
+        except Exception as e:
+            return False
+    return False
+
+
+
+
+
 async def send_debug_message(message, bot=None):
     """Буферизирует и отправляет дебаг-сообщения группами"""
     if not DEBUG_CHATS or not bot:
