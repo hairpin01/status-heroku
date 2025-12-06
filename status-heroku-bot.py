@@ -215,6 +215,17 @@ async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
             return False
     return False
 
+async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
+    """Редактирует сообщение с прогрессом"""
+    if update.callback_query:
+        chat_id = update.callback_query.message.chat_id
+    else:
+        chat_id = update.message.chat_id
+
+    try:
+        await safe_edit_message(context.bot, chat_id, message_id, text)
+    except Exception as e:
+        print(f"Ошибка редактирования сообщения: {e}")
 
 
 
