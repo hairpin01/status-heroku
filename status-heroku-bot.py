@@ -257,7 +257,7 @@ def get_userbot_status():
     return False, None
 
 async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверить обновления бота на GitHub"""
+    """Проверить обновления бота на pornohub"""
     user_id = update.effective_user.id
 
     if not is_owner(user_id):
@@ -267,7 +267,6 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
-    # Определяем, откуда пришел запрос
     if update.callback_query:
         message = await update.callback_query.message.reply_text("🔍 Проверяю обновления на GitHub...")
         chat_id = message.chat_id
@@ -276,7 +275,6 @@ async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.chat_id
 
     try:
-        # Получаем информацию о последнем релизе
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         response = requests.get(url, timeout=10)
 
