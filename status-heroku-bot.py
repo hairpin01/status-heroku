@@ -23,8 +23,8 @@ CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "BOT_TOKEN": "",
     "OWNER_ID": "",
-    "USERBOT_DIR": "/home/alina/Heroku-dev",
-    "VENV_PYTHON": "/home/alina/.venv/bin/python",
+    "USERBOT_DIR": "/home/(вы)/Heroku",
+    "VENV_PYTHON": "/home/(вы)/.venv/bin/python",
     "PROXYCHAINS_PATH": "/usr/bin/proxychains",
     "GITHUB_REPO": "hairpin01/status-heroku",
     "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
@@ -1108,14 +1108,7 @@ async def about_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 **Heroku Monitor Bot v{BOT_VERSION}**\n\n"
         f"**Разработчик:** hairpin01\n"
         f"**Репозиторий:** {GITHUB_REPO}\n"
-        f"**Назначение:** Мониторинг системы и управление юзерботом HerokuTL\n\n"
-        f"**Возможности:**\n"
-        f"• Управление юзерботом\n"
-        f"• Мониторинг системы\n"
-        f"• Просмотр логов\n"
-        f"• Управление пользователями\n"
-        f"• Автоматические обновления\n\n"
-        f"**Технологии:** Python, python-telegram-bot, psutil"
+        f"**Назначение:** Мониторинг системы и управление юзерботом Heroku\n\n"
     )
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
@@ -1237,7 +1230,6 @@ async def connection_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Отправляем или обновляем сообщение БЕЗ parse_mode
     try:
         if is_callback:
             await update.callback_query.edit_message_text(
@@ -1278,7 +1270,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "Can't parse entities" in str(error):
             print("Ошибка разбора Markdown. Проверьте форматирование сообщений.")
         elif "Message is not modified" in str(error):
-            # Игнорируем эту ошибку - сообщение не изменилось
+
             return
     elif isinstance(error, TimedOut):
         print("Таймаут запроса к Telegram API")
@@ -1567,7 +1559,7 @@ async def debug_userbot_callback(update: Update, context: ContextTypes.DEFAULT_T
     else:
         diagnostic_messages.append("❌ Юзербот не запущен")
 
-    log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+    log_file_path = os.path.join(USERBOT_DIR, LOG_FILE)
     if os.path.exists(log_file_path):
         file_size = os.path.getsize(log_file_path)
         diagnostic_messages.append(f"✅ Файл логов существует ({file_size} bytes)")
@@ -2763,7 +2755,7 @@ async def start_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("🔄 Запускаю юзербота...")
 
-        log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+        log_file_path = os.path.join(USERBOT_DIR, LOG_FILE)
 
         env = os.environ.copy()
         env['GIT_PYTHON_REFRESH'] = 'quiet'
@@ -3333,7 +3325,7 @@ async def debug_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         diagnostic_messages.append("❌ Юзербот не запущен")
 
-    log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+    log_file_path = os.path.join(USERBOT_DIR, LOG_FILE)
     if os.path.exists(log_file_path):
         file_size = os.path.getsize(log_file_path)
         diagnostic_messages.append(f"✅ Файл логов существует ({file_size} bytes)")
@@ -3388,7 +3380,7 @@ async def get_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Мониторинг логов юзербота
 async def monitor_userbot_logs(bot):
     """Мониторит вывод юзербота и отправляет в дебаг-чаты"""
-    log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+    log_file_path = os.path.join(USERBOT_DIR, LOG_FILE)
 
     for i in range(30):
         if os.path.exists(log_file_path):
