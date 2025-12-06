@@ -346,7 +346,6 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Доступ запрещен")
         return
 
-    # Определяем, откуда пришел запрос
     if update.callback_query:
         message = await update.callback_query.message.reply_text("🔄 Начинаю обновление бота...")
         chat_id = message.chat_id
@@ -355,79 +354,96 @@ async def update_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.message.chat_id
 
     try:
-        # Сохраняем текущих пользователей перед обновлением
+
         save_users(USER_IDS)
 
-        # Проверяем доступность git
-        git_paths = [
-            "/usr/bin/git",
-            "/usr/local/bin/git",
-            "/bin/git",
-            "/usr/lib/git",
-            "/opt/homebrew/bin/git" 
-        ]
 
-        git_cmd = "git"
-        for path in git_paths:
-            if os.path.exists(path):
-                git_cmd = path
-                break
+        current_file = os.path.abspath(__file__)
+        backup_file = current_file + ".backup"
 
-        # Проверяем, есть ли git
-        check_git = await asyncio.create_subprocess_shell(
-            f"{git_cmd} --version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await check_git.communicate()
 
-        if check_git.returncode != 0:
-            await context.bot.send_message(
-                chat_id,
-                "❌ Git не установлен или не найден. Установите git:\n"
-                "`sudo apt update && sudo apt install git -y`\n\n"
-                "Или обновите бот вручную:\n"
-                "```bash\n"
-                f"cd {os.path.dirname(os.path.abspath(__file__))}\n"
-                "git pull\n"
-                "```",
-                parse_mode='Markdown'
-            )
+        temp_file = current_file + ".new"
+
+        # Скачиваем новый код по raw ссылке
+        await context.bot.send_message(chat_id, "📥 Скачиваю обновление...")
+
+        try:
+            response = requests.get(GITHUB_RAW_URL, timeout=30)
+            response.raise_for_status()
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"❌ Ошибка загрузки обновления: {str(e)}")
             return
 
-        # Выполняем git pull для обновления
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        process = await asyncio.create_subprocess_shell(
-            f"cd {script_dir} && {git_cmd} pull",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy()  # Используем текущее окружение
-        )
+        # Сохраняем новый код во временный файл
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            f.write(response.text)
 
-        stdout, stderr = await process.communicate()
-        output = stdout.decode() + stderr.decode()
+        # Проверяем синтаксис нового кода
+        await context.bot.send_message(chat_id, "🔍 Проверяю синтаксис...")
+        try:
+            check_result = subprocess.run(
+                [VENV_PYTHON, "-m", "py_compile", temp_file],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
 
-        if process.returncode == 0:
-            if "Already up to date" in output:
-                await context.bot.send_message(chat_id, "✅ Бот уже обновлен до последней версии")
-            else:
+            if check_result.returncode != 0:
+                error_msg = check_result.stderr[:500] if check_result.stderr else "Неизвестная ошибка синтаксиса"
                 await context.bot.send_message(
                     chat_id,
-                    f"✅ Бот успешно обновлен!\n\n"
-                    f"**Вывод команды:**\n```\n{output[:1000]}\n```\n\n"
-                    f"Перезапускаю бота...",
+                    f"❌ Ошибка синтаксиса в новом коде:\n```\n{error_msg}\n```",
                     parse_mode='Markdown'
                 )
-                # Перезапускаем бота
-                await restart_bot(update, context)
-        else:
-            await context.bot.send_message(
-                chat_id,
-                f"❌ Ошибка при обновлении:\n```\n{output[:1000]}\n```\n\n"
-                f"Попробуйте обновить вручную:\n"
-                f"```bash\ncd {script_dir} && git pull\n```",
-                parse_mode='Markdown'
-            )
+                os.remove(temp_file)
+                return
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"❌ Ошибка проверки синтаксиса: {str(e)}")
+            os.remove(temp_file)
+            return
+
+        # Создаем резервную копию текущего файла
+        await context.bot.send_message(chat_id, "💾 Создаю резервную копию...")
+        try:
+            import shutil
+            shutil.copy2(current_file, backup_file)
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"⚠️ Не удалось создать резервную копию: {str(e)}")
+
+        # Заменяем текущий файл новым
+        await context.bot.send_message(chat_id, "🔄 Применяю обновление...")
+        try:
+            # Закрываем все файловые дескрипторы перед заменой
+            import sys
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+            # Заменяем файл
+            os.replace(temp_file, current_file)
+
+            # Устанавливаем правильные права доступа
+            os.chmod(current_file, 0o755)
+
+        except Exception as e:
+            # Восстанавливаем из резервной копии при ошибке
+            if os.path.exists(backup_file):
+                try:
+                    os.replace(backup_file, current_file)
+                    await context.bot.send_message(chat_id, "🔄 Восстановлен из резервной копии")
+                except:
+                    pass
+
+            await context.bot.send_message(chat_id, f"❌ Ошибка применения обновления: {str(e)}")
+            return
+
+        await context.bot.send_message(
+            chat_id,
+            "✅ Бот успешно обновлен!\n\n"
+            "Перезапускаю бота..."
+        )
+
+        # Перезапускаем бота
+        await restart_bot(update, context)
 
     except Exception as e:
         await context.bot.send_message(chat_id, f"❌ Ошибка при обновлении: {str(e)}")
