@@ -26,8 +26,8 @@ def load_config():
     default_config = {
         "BOT_TOKEN": "",
         "OWNER_ID": "",
-        "USERBOT_DIR": os.path.expanduser("~/Heroku-dev"),
-        "VENV_PYTHON": "/home/alina/.venv/bin/python",
+        "USERBOT_DIR": os.path.expanduser("~/Heroku"),
+        "VENV_PYTHON": "/home/{вы}/.venv/bin/python",
         "PROXYCHAINS_PATH": "/usr/bin/proxychains",
         "GITHUB_REPO": "hairpin01/status-heroku",
         "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
@@ -840,8 +840,8 @@ async def restart_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not still_running:
                 break
                 proc.kill()
-            except:
-                pass
+           # except:
+           #    pass
 
     # Запускаем заново
     try:
