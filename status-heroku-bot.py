@@ -3678,6 +3678,18 @@ async def main():
     global application_instance
 
     print("Инициализация бота...")
+    print(f"Версия бота: {BOT_VERSION}")
+    print(f"Владелец: {OWNER_ID}")
+    print(f"Пользователей: {len(USER_IDS)}")
+
+    # Проверяем обязательные параметры
+    if not BOT_TOKEN or BOT_TOKEN == "ТУТ_BOT_TOKEN":
+        print("❌ Ошибка: BOT_TOKEN не установлен в config.json")
+        return
+
+    if not OWNER_ID or OWNER_ID == "ВАШ_АЙДИ":
+        print("❌ Ошибка: OWNER_ID не установлен в config.json")
+        return
 
     # Создаем application
     application = Application.builder()\
@@ -3735,19 +3747,12 @@ async def main():
     print("Бот запускается...")
 
     try:
-        # Инициализируем приложение
         await application.initialize()
-
-        # Запускаем приложение
         await application.start()
-        print("Бот успешно запущен")
 
-        # Загружаем пользователей при старте
-        global USER_IDS
         USER_IDS = load_users()
         print(f"Загружено {len(USER_IDS)} пользователей")
 
-        # Запускаем polling
         await application.updater.start_polling(
             poll_interval=1.0,
             timeout=20.0,
@@ -3755,45 +3760,32 @@ async def main():
         )
         print("Polling запущен")
 
-        # Отправляем уведомление о запуске
         await send_startup_notification(application)
 
-        # Бесконечный цикл для поддержания работы бота
         while True:
-            await asyncio.sleep(3600)  # Спим 1 час
+            await asyncio.sleep(3600)
 
     except Exception as e:
         print(f"Критическая ошибка в main: {e}")
-        # Ждем перед перезапуском
         await asyncio.sleep(10)
-
     finally:
         print("Завершаем работу бота...")
         try:
-            # Останавливаем updater
             if application.updater and application.updater.running:
                 await application.updater.stop()
-
-            # Останавливаем приложение
             if application.running:
                 await application.stop()
-
-            # Завершаем работу приложения
             if hasattr(application, '_initialized') and application._initialized:
                 await application.shutdown()
-
         except Exception as e:
             print(f"Ошибка при завершении работы: {e}")
 
 if __name__ == "__main__":
     try:
         import sys
-        # Запускаем главную функцию
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен пользователем")
     except Exception as e:
         print(f"Критическая ошибка: {e}")
-        # Перезапускаем через systemd
         sys.exit(1)
-
