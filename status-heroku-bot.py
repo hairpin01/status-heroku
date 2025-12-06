@@ -2250,7 +2250,7 @@ async def debug_userbot_callback(update: Update, context: ContextTypes.DEFAULT_T
     else:
         diagnostic_messages.append("❌ Юзербот не запущен")
 
-    log_file_path = os.path.join(USERBOT_DIR, "userbot_output.log")
+    log_file_path = os.path.join(USERBOT_DIR, LOG_FILE)
     if os.path.exists(log_file_path):
         file_size = os.path.getsize(log_file_path)
         diagnostic_messages.append(f"✅ Файл логов существует ({file_size} bytes)")
