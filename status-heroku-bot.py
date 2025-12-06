@@ -41,6 +41,7 @@ reconnect_attempts = 0
 is_reconnecting = True
 application_instance = None
 
+# буфер
 debug_message_buffer = []
 debug_buffer_lock = asyncio.Lock()
 debug_buffer_size = 5  # Количество сообщений в одном буфере
