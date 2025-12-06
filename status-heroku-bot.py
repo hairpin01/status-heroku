@@ -19,43 +19,19 @@ from telegram.ext import (
 )
 from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
 
-# Загрузка конфигурации
-def load_config():
-    """Загружает конфигурацию из файла config.json"""
-    config_path = "config.json"
-    default_config = {
-        "BOT_TOKEN": "",
-        "OWNER_ID": "",
-        "USERBOT_DIR": os.path.expanduser("~/Heroku"),
-        "VENV_PYTHON": "/home/{вы}/.venv/bin/python",
-        "PROXYCHAINS_PATH": "/usr/bin/proxychains",
-        "GITHUB_REPO": "hairpin01/status-heroku",
-        "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
-        "BOT_VERSION": "1.0.6",
-        "USER_IDS_FILE": "users.json",
-        "LOG_FILE": "heroku.log"
-    }
-
-    try:
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                # Обновляем недостающие значения по умолчанию
-                for key in default_config:
-                    if key not in config:
-                        config[key] = default_config[key]
-                return config
-        else:
-            # Создаем файл конфигурации с значениями по умолчанию
-            with open(config_path, 'w') as f:
-                json.dump(default_config, f, indent=4)
-            print(f"Создан файл конфигурации: {config_path}")
-            print("Пожалуйста, заполните BOT_TOKEN и OWNER_ID в config.json")
-            return default_config
-    except Exception as e:
-        print(f"Ошибка загрузки конфигурации: {e}")
-        return default_config
-
+CONFIG_FILE = "config.json"
+DEFAULT_CONFIG = {
+    "BOT_TOKEN": "",
+    "OWNER_ID": "",
+    "USERBOT_DIR": "/home/alina/Heroku-dev",
+    "VENV_PYTHON": "/home/alina/.venv/bin/python",
+    "PROXYCHAINS_PATH": "/usr/bin/proxychains",
+    "GITHUB_REPO": "hairpin01/status-heroku",
+    "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
+    "BOT_VERSION": "1.0.6",
+    "USER_IDS_FILE": "users.json",
+    "LOG_FILE": "heroku.log"
+}
 
 def load_config():
     """Загружает конфигурацию из файла"""
@@ -80,7 +56,6 @@ def load_config():
 
 # Загружаем конфигурацию
 CONFIG = load_config()
-
 # Инициализация переменных из конфигурации
 BOT_TOKEN = CONFIG["BOT_TOKEN"]
 OWNER_ID = CONFIG["OWNER_ID"]
