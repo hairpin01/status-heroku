@@ -56,6 +56,28 @@ def load_config():
         print(f"Ошибка загрузки конфигурации: {e}")
         return default_config
 
+
+def load_config():
+    """Загружает конфигурацию из файла"""
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                # Заполняем недостающие значения по умолчанию
+                for key, value in DEFAULT_CONFIG.items():
+                    if key not in config:
+                        config[key] = value
+                return config
+        else:
+            # Создаем файл конфигурации
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4)
+            print(f"Создан файл конфигурации: {CONFIG_FILE}")
+            return DEFAULT_CONFIG
+    except Exception as e:
+        print(f"Ошибка загрузки конфигурации: {e}")
+        return DEFAULT_CONFIG
+
 # Загружаем конфигурацию
 CONFIG = load_config()
 
@@ -107,12 +129,14 @@ def load_users():
             with open(USER_IDS_FILE, 'r') as f:
                 USER_IDS = set(json.load(f))
         else:
-            # Создаем файл с владельцем по умолчанию
-            USER_IDS = {OWNER_ID} if OWNER_ID else set()
+            if OWNER_ID and OWNER_ID.isdigit():
+                USER_IDS = {int(OWNER_ID)}
+            else:
+                USER_IDS = set()
             save_users(USER_IDS)
     except Exception as e:
         print(f"Ошибка загрузки пользователей: {e}")
-        USER_IDS = {OWNER_ID} if OWNER_ID else set()
+        USER_IDS = set()
 
 def save_users(users):
     """Сохраняет список пользователей в файл"""
@@ -124,14 +148,12 @@ def save_users(users):
     except Exception as e:
         print(f"Ошибка сохранения пользователей: {e}")
 
-# Загружаем пользователей при старте
-load_users()
-
-# Проверка прав
 def is_owner(user_id):
+    """Проверяет, является ли пользователь владельцем"""
     return str(user_id) == str(OWNER_ID)
 
 def is_user(user_id):
+    """Проверяет, имеет ли пользователь доступ"""
     return str(user_id) in [str(uid) for uid in USER_IDS] or is_owner(user_id)
 
 def get_system_info():
@@ -840,8 +862,8 @@ async def restart_userbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not still_running:
                 break
                 proc.kill()
-           # except:
-           #    pass
+          #  except:
+          #      pass
 
     # Запускаем заново
     try:
@@ -3674,75 +3696,41 @@ async def send_startup_notification(application):
         print(f"Ошибка при отправке уведомлений: {e}")
 
 async def main():
-    """Главная асинхронная функция"""
-    global application_instance
+    """Главная функция"""
+    global USER_IDS
 
     print("Инициализация бота...")
     print(f"Версия бота: {BOT_VERSION}")
     print(f"Владелец: {OWNER_ID}")
-    print(f"Пользователей: {len(USER_IDS)}")
 
-    # Проверяем обязательные параметры
-    if not BOT_TOKEN or BOT_TOKEN == "ТУТ_BOT_TOKEN":
+    if not BOT_TOKEN or BOT_TOKEN == "":
         print("❌ Ошибка: BOT_TOKEN не установлен в config.json")
         return
 
-    if not OWNER_ID or OWNER_ID == "ВАШ_АЙДИ":
+    if not OWNER_ID or OWNER_ID == "":
         print("❌ Ошибка: OWNER_ID не установлен в config.json")
         return
 
-    # Создаем application
-    application = Application.builder()\
-        .token(BOT_TOKEN)\
-        .connect_timeout(30.0)\
-        .read_timeout(30.0)\
-        .write_timeout(30.0)\
-        .pool_timeout(30.0)\
-        .build()
+    load_users()
+    print(f"Загружено пользователей: {len(USER_IDS)}")
 
-    application_instance = application
+    # Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавление обработчиков
+    # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", show_main_menu))
     application.add_handler(CommandHandler("start_userbot", start_userbot))
     application.add_handler(CommandHandler("stop_userbot", stop_userbot))
     application.add_handler(CommandHandler("restart_userbot", restart_userbot))
-    application.add_handler(CommandHandler("restart_bot", restart_bot))
-    application.add_handler(CommandHandler("install_requirements", install_requirements))
-    application.add_handler(CommandHandler("update_heroku", update_heroku))
-    application.add_handler(CommandHandler("info", system_info))
-    application.add_handler(CommandHandler("detailed_info", detailed_info))
-    application.add_handler(CommandHandler("ram", ram_info))
-    application.add_handler(CommandHandler("cpu", cpu_info))
-    application.add_handler(CommandHandler("disk", disk_info))
     application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("uptime", uptime))
-    application.add_handler(CommandHandler("uptime_userbot", uptime_userbot))
-    application.add_handler(CommandHandler("ping", ping))
-    application.add_handler(CommandHandler("terminal", terminal))
-    application.add_handler(CommandHandler("logs", logs))
-    application.add_handler(CommandHandler("debug_on", start_debug))
-    application.add_handler(CommandHandler("debug_off", stop_debug))
-    application.add_handler(CommandHandler("debug_userbot", debug_userbot))
-    application.add_handler(CommandHandler("get_owner", get_owner))
+    application.add_handler(CommandHandler("info", system_info))
     application.add_handler(CommandHandler("get_user", get_user))
     application.add_handler(CommandHandler("del_user", del_user))
     application.add_handler(CommandHandler("check_updates", check_updates))
     application.add_handler(CommandHandler("update_bot", update_bot))
-    application.add_handler(CommandHandler("connection_status", connection_status))
 
-
-    # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
-
-    # Инлайн-режим
-    application.add_handler(InlineQueryHandler(inline_query))
-
-    # Обработчик выбранных инлайн-результатов
-    application.add_handler(ChosenInlineResultHandler(handle_chosen_inline))
-
-    application.add_error_handler(error_handler)
 
     print("Бот запускается...")
 
@@ -3750,42 +3738,37 @@ async def main():
         await application.initialize()
         await application.start()
 
-        USER_IDS = load_users()
-        print(f"Загружено {len(USER_IDS)} пользователей")
-
         await application.updater.start_polling(
             poll_interval=1.0,
             timeout=20.0,
             drop_pending_updates=True
         )
+
         print("Polling запущен")
 
+        # Отправляем уведомления
         await send_startup_notification(application)
 
+        # Бесконечный цикл
         while True:
             await asyncio.sleep(3600)
 
     except Exception as e:
-        print(f"Критическая ошибка в main: {e}")
-        await asyncio.sleep(10)
+        print(f"Критическая ошибка: {e}")
     finally:
         print("Завершаем работу бота...")
         try:
-            if application.updater and application.updater.running:
+            if application.updater:
                 await application.updater.stop()
-            if application.running:
-                await application.stop()
-            if hasattr(application, '_initialized') and application._initialized:
-                await application.shutdown()
+            await application.stop()
+            await application.shutdown()
         except Exception as e:
-            print(f"Ошибка при завершении работы: {e}")
+            print(f"Ошибка при завершении: {e}")
 
 if __name__ == "__main__":
     try:
-        import sys
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен пользователем")
     except Exception as e:
         print(f"Критическая ошибка: {e}")
-        sys.exit(1)
