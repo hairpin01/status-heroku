@@ -7,17 +7,16 @@ import tempfile
 import re
 import asyncio
 import requests
-import socket
-import aiohttp
-from telegram.helpers import escape_markdown
-from aiohttp import ClientError, ClientConnectorError
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, InlineQueryHandler,
-    CallbackQueryHandler, ChosenInlineResultHandler, MessageHandler, filters
+    CallbackQueryHandler, ChosenInlineResultHandler
 )
-from telegram.error import TimedOut, NetworkError, RetryAfter, BadRequest
+from telegram.error import TimedOut, NetworkError, BadRequest
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
