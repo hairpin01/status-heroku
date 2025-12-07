@@ -2425,25 +2425,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "open_logs_dir":
         await open_logs_dir_callback(update, context)
 
-    # Настройки
-
     elif data == "monitoring_status":
         await monitoring_status(update, context)
-
     elif data == "test_alert":
         await test_alert(update, context)
-
     elif data == "load_graph":
         await show_load_graph(update, context)
-
     elif data == "monitoring_settings":
         await monitoring_settings(update, context)
 
     elif data == "scheduler_status":
         await scheduler_status(update, context)
-
+    elif data == "scheduler_settings":
+        await scheduler_settings(update, context)
     elif data == "generate_report":
         await generate_report(update, context)
+    elif data == "toggle_auto_restart":
+        await toggle_auto_restart(update, context)
+    elif data == "toggle_scheduler":
+        await toggle_scheduler(update, context)
+    elif data == "set_report_time":
+        await set_report_time(update, context)
+    elif data == "set_restart_time":
+        await set_restart_time(update, context)
+    elif data == "set_clean_days":
+        await set_clean_days(update, context)
+    elif data == "set_timezone":
+        await set_timezone(update, context)
+    elif data == "apply_scheduler_settings":
+        await apply_scheduler_settings(update, context)
+    elif data == "save_scheduler_config":
+        await save_scheduler_config(update, context)
+
+    elif data.startswith("set_time_") or data.startswith("set_restart_") or \
+         data.startswith("set_logs_") or data.startswith("set_tz_"):
+        await handle_time_setting(update, context)
 
     elif data == "connection_status":
         await connection_status(update, context)
