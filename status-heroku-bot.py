@@ -108,6 +108,16 @@ reconnect_attempts = 0
 is_reconnecting = True
 application_instance = None
 
+last_alert_time = {
+    "CPU": 0,
+    "RAM": 0,
+    "DISK": 0,
+    "USERBOT_DOWN": 0
+}
+alert_cooldown = MONITORING_CONFIG["ALERTS"]["MIN_INTERVAL_BETWEEN_ALERTS"]
+
+
+
 # Буфер для дебаг-сообщений
 debug_message_buffer = []
 debug_buffer_lock = asyncio.Lock()
@@ -202,6 +212,42 @@ def get_system_info():
     )
 
     return info
+
+def get_detailed_metrics():
+    """Получает подробные метрики системы"""
+    cpu = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+
+    # Температура
+    try:
+        temps = psutil.sensors_temperatures()
+        cpu_temp = "N/A"
+        if 'coretemp' in temps:
+            cpu_temp = max(temp.current for temp in temps['coretemp'])
+    except:
+        cpu_temp = "N/A"
+
+    # Сетевая активность
+    net_io = psutil.net_io_counters()
+
+    return {
+        "cpu": cpu,
+        "ram_percent": ram.percent,
+        "ram_used": ram.used // (1024**3),
+        "ram_total": ram.total // (1024**3),
+        "disk_percent": disk.percent,
+        "disk_used": disk.used // (1024**3),
+        "disk_total": disk.total // (1024**3),
+        "cpu_temp": cpu_temp,
+        "net_sent": net_io.bytes_sent // (1024**2),
+        "net_recv": net_io.bytes_recv // (1024**2)
+    }
+
+
+
+
+
 
 async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
     """Безопасное редактирование сообщения"""
