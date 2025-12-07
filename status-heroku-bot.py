@@ -1446,6 +1446,48 @@ async def save_scheduler_config(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer(f"❌ Ошибка сохранения: {str(e)}", show_alert=True)
 
 
+
+async def handle_time_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка установки времени"""
+    query = update.callback_query
+    data = query.data
+
+    if data.startswith("set_time_"):
+        time_str = data.replace("set_time_", "")
+        SCHEDULED_TASKS_CONFIG["DAILY_REPORT_TIME"] = time_str
+        await query.answer(f"📅 Время отчета: {time_str}", show_alert=True)
+
+    elif data.startswith("set_restart_"):
+        time_str = data.replace("set_restart_", "")
+        SCHEDULED_TASKS_CONFIG["AUTO_RESTART_TIME"] = time_str
+        await query.answer(f"⏰ Время перезапуска: {time_str}", show_alert=True)
+
+    elif data.startswith("set_logs_"):
+        days = int(data.replace("set_logs_", ""))
+        SCHEDULED_TASKS_CONFIG["CLEAN_OLD_LOGS_DAYS"] = days
+        status = "отключена" if days == 0 else f"{days} дней"
+        await query.answer(f"🧹 Очистка логов: {status}", show_alert=True)
+
+    elif data.startswith("set_tz_"):
+        tz_map = {
+            "moscow": "Europe/Moscow",
+            "kiev": "Europe/Kiev",
+            "london": "Europe/London",
+            "berlin": "Europe/Berlin",
+            "ny": "America/New_York",
+            "tokyo": "Asia/Tokyo"
+        }
+        tz_key = data.replace("set_tz_", "")
+        if tz_key in tz_map:
+            SCHEDULED_TASKS_CONFIG["TIMEZONE"] = tz_map[tz_key]
+            await query.answer(f"🌐 Часовой пояс: {tz_key}", show_alert=True)
+
+    # Возвращаемся к настройкам
+    await scheduler_settings(update, context)
+
+
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
     if not is_user(update.effective_user.id):
