@@ -236,7 +236,6 @@ def get_detailed_metrics():
         "ram_percent": ram.percent,
         "ram_used": ram.used // (1024**3),
         "ram_total": ram.total // (1024**3),
-        "disk_percent": disk.percent,
         "disk_used": disk.used // (1024**3),
         "disk_total": disk.total // (1024**3),
         "cpu_temp": cpu_temp,
@@ -324,11 +323,6 @@ async def check_system_health(context: ContextTypes.DEFAULT_TYPE):
             alerts.append(f"💾 **Высокая нагрузка RAM!** {metrics['ram_percent']}% ({metrics['ram_used']}/{metrics['ram_total']} GB)")
             last_alert_time["RAM"] = current_time
 
-    # Проверка диска
-    if metrics["disk_percent"] > MONITORING_CONFIG["ALERTS"]["DISK_THRESHOLD"]:
-        if current_time - last_alert_time["DISK"] > alert_cooldown:
-            alerts.append(f"💿 **Мало места на диске!** {metrics['disk_percent']}% ({metrics['disk_used']}/{metrics['disk_total']} GB)")
-            last_alert_time["DISK"] = current_time
 
     # Проверка юзербота
     is_running, _ = get_userbot_status()
@@ -396,7 +390,6 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
 🖥 **Состояние системы:**
 • CPU: {metrics['cpu']:.1f}%
 • RAM: {metrics['ram_percent']:.1f}% ({metrics['ram_used']}/{metrics['ram_total']} GB)
-• Disk: {metrics['disk_percent']:.1f}% ({metrics['disk_used']}/{metrics['disk_total']} GB)
 • Температура CPU: {metrics['cpu_temp'] if metrics['cpu_temp'] != 'N/A' else 'N/A'}°C
 • Сеть: 📤 {metrics['net_sent']} MB | 📥 {metrics['net_recv']} MB
 
@@ -576,7 +569,6 @@ async def monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Определяем статус каждого параметра
     cpu_status = "🚨" if metrics["cpu"] > cpu_threshold else "✅"
     ram_status = "🚨" if metrics["ram_percent"] > ram_threshold else "✅"
-    disk_status = "🚨" if metrics["disk_percent"] > disk_threshold else "✅"
 
     message = f"""
 📊 **СИСТЕМА МОНИТОРИНГА**
@@ -588,12 +580,10 @@ async def monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **Пороги алертов:**
 • CPU: {cpu_threshold}% {cpu_status}
 • RAM: {ram_threshold}% {ram_status}
-• Диск: {disk_threshold}% {disk_status}
 
 **Текущие значения:**
 • CPU: {metrics['cpu']:.1f}%
 • RAM: {metrics['ram_percent']:.1f}%
-• Диск: {metrics['disk_percent']:.1f}%
 
 **Получатели алертов:** {'Все пользователи' if MONITORING_CONFIG['ALERTS']['NOTIFY_USERS'] else 'Только владелец'}
 """
@@ -655,17 +645,14 @@ async def show_load_graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cpu_bar = create_bar(metrics["cpu"], MONITORING_CONFIG["ALERTS"]["CPU_THRESHOLD"])
     ram_bar = create_bar(metrics["ram_percent"], MONITORING_CONFIG["ALERTS"]["RAM_THRESHOLD"])
-    disk_bar = create_bar(metrics["disk_percent"], MONITORING_CONFIG["ALERTS"]["DISK_THRESHOLD"])
-
     graph = f"""
 📈 **ГРАФИК НАГРУЗКИ СИСТЕМЫ**
 
 CPU [{metrics['cpu']:>5.1f}%] {cpu_bar}
 RAM [{metrics['ram_percent']:>5.1f}%] {ram_bar}
-Диск [{metrics['disk_percent']:>5.1f}%] {disk_bar}
 
 🟢 Нормально | 🔴 Высокая нагрузка
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━
 0%{' ' * 18}50%{' ' * 18}100%
 """
 
@@ -1146,10 +1133,6 @@ async def detailed_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += "🔥 **Топ процессов по CPU:**\n"
     for proc in top_processes:
         message += f"• {proc['name']}: {proc['cpu_percent'] or 0:.1f}% CPU, {proc['memory_percent'] or 0:.1f}% RAM\n"
-
-    message += "\n💾 **Диски:**\n"
-    for disk in disks:
-        message += f"• {disk['device']} ({disk['mountpoint']}): {disk['percent']}% ({disk['used']}/{disk['total']} GB)\n"
 
     # Информация о юзерботе
     is_running, start_time = get_userbot_status()
