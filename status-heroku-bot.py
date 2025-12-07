@@ -489,6 +489,42 @@ async def auto_restart_userbot(context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def clean_old_logs(context: ContextTypes.DEFAULT_TYPE):
+    """Очистка старых логов"""
+    if not SCHEDULED_TASKS_CONFIG["ENABLED"]:
+        return
+
+    days_to_keep = SCHEDULED_TASKS_CONFIG.get("CLEAN_OLD_LOGS_DAYS", 7)
+    if days_to_keep <= 0:
+        return
+
+    print(f"🧹 Очищаю логи старше {days_to_keep} дней...")
+
+    try:
+        log_dir = USERBOT_DIR
+        deleted_files = 0
+        current_time = time.time()
+        cutoff_time = current_time - (days_to_keep * 24 * 3600)
+
+        for filename in os.listdir(log_dir):
+            filepath = os.path.join(log_dir, filename)
+            if os.path.isfile(filepath):
+                # Проверяем расширение файла
+                if filename.endswith(('.log', '.txt')) and 'backup' in filename.lower():
+                    file_mtime = os.path.getmtime(filepath)
+                    if file_mtime < cutoff_time:
+                        os.remove(filepath)
+                        deleted_files += 1
+                        print(f"Удален старый файл: {filename}")
+
+        if deleted_files > 0:
+            print(f"Удалено {deleted_files} старых файлов логов")
+
+    except Exception as e:
+        print(f"Ошибка очистки логов: {e}")
+
+
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
     """Редактирует сообщение с прогрессом"""
     if update.callback_query:
