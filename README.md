@@ -1,5 +1,5 @@
 ### ЧяВо
-Завависимости: `python-telegram-bot`, `psutil`, `aiohttp`.
+Завависимости: `python-telegram-bot`, `psutil`, `aiohttp`, `apscheduler`, `pytz`.
 > [!TIP]
 > бот сделан для удобного управления юзерботами ( управляет полностью только владелец бота)
 > 
