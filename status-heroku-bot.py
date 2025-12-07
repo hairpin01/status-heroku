@@ -1328,6 +1328,46 @@ async def scheduler_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+
+async def toggle_auto_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключение автоперезапуска юзербота"""
+    query = update.callback_query
+
+    SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"] = not SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"]
+
+    status = "включен" if SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"] else "выключен"
+    await query.answer(f"🔄 Автоперезапуск {status}", show_alert=True)
+
+    # Обновляем сообщение
+    await scheduler_settings(update, context)
+
+async def set_restart_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка времени автоперезапуска"""
+    query = update.callback_query
+    await query.answer()
+
+    keyboard = [
+        [
+            InlineKeyboardButton("02:00", callback_data="set_restart_02:00"),
+            InlineKeyboardButton("03:00", callback_data="set_restart_03:00"),
+            InlineKeyboardButton("04:00", callback_data="set_restart_04:00")
+        ],
+        [
+            InlineKeyboardButton("05:00", callback_data="set_restart_05:00"),
+            InlineKeyboardButton("06:00", callback_data="set_restart_06:00"),
+            InlineKeyboardButton("⬅️ Назад", callback_data="scheduler_settings")
+        ]
+    ]
+
+    await query.edit_message_text(
+        "⏰ **Установите время автоперезапуска юзербота:**\n\n"
+        "Рекомендуется устанавливать на ночное время",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
     if not is_user(update.effective_user.id):
