@@ -1365,7 +1365,29 @@ async def set_restart_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def set_clean_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установка дней хранения логов"""
+    query = update.callback_query
+    await query.answer()
 
+    keyboard = [
+        [
+            InlineKeyboardButton("3 дня", callback_data="set_logs_3"),
+            InlineKeyboardButton("7 дней", callback_data="set_logs_7"),
+            InlineKeyboardButton("14 дней", callback_data="set_logs_14")
+        ],
+        [
+            InlineKeyboardButton("30 дней", callback_data="set_logs_30"),
+            InlineKeyboardButton("Отключить", callback_data="set_logs_0"),
+            InlineKeyboardButton("⬅️ Назад", callback_data="scheduler_settings")
+        ]
+    ]
+
+    await query.edit_message_text(
+        "🧹 **Сколько дней хранить логи?**\n\n"
+        "Старые логи будут автоматически удаляться",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
