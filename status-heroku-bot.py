@@ -1422,6 +1422,30 @@ async def apply_scheduler_settings(update: Update, context: ContextTypes.DEFAULT
         await query.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
 
 
+async def save_scheduler_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранение настроек планировщика в config.json"""
+    query = update.callback_query
+
+    try:
+        # Обновляем конфигурацию
+        CONFIG["SCHEDULED_TASKS"] = SCHEDULED_TASKS_CONFIG
+
+        # Сохраняем в файл
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(CONFIG, f, indent=4)
+
+        await query.answer("✅ Настройки сохранены в config.json", show_alert=True)
+
+        # Обновляем глобальные переменные
+        global SCHEDULED_TASKS_CONFIG
+        SCHEDULED_TASKS_CONFIG = CONFIG["SCHEDULED_TASKS"]
+
+        await scheduler_settings(update, context)
+
+    except Exception as e:
+        await query.answer(f"❌ Ошибка сохранения: {str(e)}", show_alert=True)
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
     if not is_user(update.effective_user.id):
