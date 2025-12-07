@@ -1402,6 +1402,24 @@ async def toggle_scheduler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обновляем сообщение
     await scheduler_settings(update, context)
 
+async def apply_scheduler_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Применение настроек планировщика"""
+    query = update.callback_query
+    await query.answer("⚙️ Применяю настройки...", show_alert=True)
+
+    try:
+        # Перезапускаем планировщик с новыми настройками
+        global scheduler
+        if scheduler:
+            scheduler.shutdown()
+
+        await setup_scheduler(context.application)
+
+        await query.answer("✅ Настройки применены", show_alert=True)
+        await scheduler_settings(update, context)
+
+    except Exception as e:
+        await query.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
