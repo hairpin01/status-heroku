@@ -80,7 +80,6 @@ def load_config():
 
 # Загружаем конфигурацию
 CONFIG = load_config()
-# Инициализация переменных из конфигурации
 BOT_TOKEN = CONFIG["BOT_TOKEN"]
 OWNER_ID = CONFIG["OWNER_ID"]
 USERBOT_DIR = CONFIG["USERBOT_DIR"]
@@ -91,6 +90,10 @@ GITHUB_RAW_URL = CONFIG["GITHUB_RAW_URL"]
 BOT_VERSION = CONFIG["BOT_VERSION"]
 USER_IDS_FILE = CONFIG["USER_IDS_FILE"]
 LOG_FILE = os.path.join(USERBOT_DIR, CONFIG["LOG_FILE"])
+
+# Конфигурация мониторинга
+MONITORING_CONFIG = CONFIG.get("MONITORING", DEFAULT_CONFIG["MONITORING"])
+SCHEDULED_TASKS_CONFIG = CONFIG.get("SCHEDULED_TASKS", DEFAULT_CONFIG["SCHEDULED_TASKS"])
 
 # Команды для запуска
 USERBOT_CMD = f"{VENV_PYTHON} -m heroku --no-web"
