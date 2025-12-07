@@ -288,6 +288,70 @@ async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
             return False
     return False
 
+
+async def check_system_health(context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет здоровье системы и отправляет алерты"""
+    global last_alert_time
+
+    if not MONITORING_CONFIG["ENABLED"]:
+        return
+
+    metrics = get_detailed_metrics()
+    current_time = time.time()
+
+    alerts = []
+
+    # Проверка CPU
+    if metrics["cpu"] > MONITORING_CONFIG["ALERTS"]["CPU_THRESHOLD"]:
+        if current_time - last_alert_time["CPU"] > alert_cooldown:
+            alerts.append(f"🔥 **Высокая нагрузка CPU!** {metrics['cpu']}%")
+            last_alert_time["CPU"] = current_time
+
+    # Проверка RAM
+    if metrics["ram_percent"] > MONITORING_CONFIG["ALERTS"]["RAM_THRESHOLD"]:
+        if current_time - last_alert_time["RAM"] > alert_cooldown:
+            alerts.append(f"💾 **Высокая нагрузка RAM!** {metrics['ram_percent']}% ({metrics['ram_used']}/{metrics['ram_total']} GB)")
+            last_alert_time["RAM"] = current_time
+
+    # Проверка диска
+    if metrics["disk_percent"] > MONITORING_CONFIG["ALERTS"]["DISK_THRESHOLD"]:
+        if current_time - last_alert_time["DISK"] > alert_cooldown:
+            alerts.append(f"💿 **Мало места на диске!** {metrics['disk_percent']}% ({metrics['disk_used']}/{metrics['disk_total']} GB)")
+            last_alert_time["DISK"] = current_time
+
+    # Проверка юзербота
+    is_running, _ = get_userbot_status()
+    if not is_running:
+        if current_time - last_alert_time["USERBOT_DOWN"] > alert_cooldown:
+            alerts.append("🛑 **Юзербот остановлен!**")
+            last_alert_time["USERBOT_DOWN"] = current_time
+    else:
+        last_alert_time["USERBOT_DOWN"] = 0
+
+    # Отправка алертов
+    if alerts:
+        alert_message = "🚨 **СИСТЕМНЫЕ АЛЕРТЫ** 🚨\n\n" + "\n".join(alerts)
+        alert_message += f"\n\n⏰ Время: {datetime.now().strftime('%H:%M:%S')}"
+
+        # Определяем, кому отправлять алерты
+        recipients = []
+        if MONITORING_CONFIG["ALERTS"]["NOTIFY_OWNER_ONLY"]:
+            if OWNER_ID and OWNER_ID.isdigit():
+                recipients = [int(OWNER_ID)]
+        elif MONITORING_CONFIG["ALERTS"]["NOTIFY_USERS"]:
+            recipients = list(USER_IDS)
+        else:
+            recipients = [int(OWNER_ID)] if OWNER_ID and OWNER_ID.isdigit() else []
+
+        # Отправляем алерты
+        for user_id in recipients:
+            try:
+                await safe_send_message(context.bot, user_id, alert_message, parse_mode='Markdown')
+                print(f"Алерт отправлен пользователю {user_id}")
+            except Exception as e:
+                print(f"Ошибка отправки алерта пользователю {user_id}: {e}")
+
+
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
     """Редактирует сообщение с прогрессом"""
     if update.callback_query:
