@@ -1201,6 +1201,50 @@ async def send_debug_message(message, bot=None):
             print(f"Не удалось отправить дебаг-сообщение в {chat_id}: {e}")
 
 
+
+async def scheduler_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус планировщика"""
+    if not is_user(update.effective_user.id):
+        return
+
+    enabled = SCHEDULED_TASKS_CONFIG["ENABLED"]
+    report_time = SCHEDULED_TASKS_CONFIG["DAILY_REPORT_TIME"]
+    auto_restart = SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"]
+    restart_time = SCHEDULED_TASKS_CONFIG.get("AUTO_RESTART_TIME", "04:00")
+
+    message = f"""
+🕐 **ПЛАНИРОВЩИК ЗАДАЧ**
+
+**Статус:** {'✅ Включен' if enabled else '❌ Выключен'}
+**Часовой пояс:** {SCHEDULED_TASKS_CONFIG.get('TIMEZONE', 'Europe/Moscow')}
+
+**Запланированные задачи:**
+📊 Ежедневный отчет: {report_time}
+{'🔄 Автоперезапуск юзербота: ' + restart_time if auto_restart else '🔄 Автоперезапуск: ❌ Выключен'}
+🧹 Очистка логов: 03:00 (каждые {SCHEDULED_TASKS_CONFIG.get('CLEAN_OLD_LOGS_DAYS', 7)} дней)
+
+**Следующие запуски:**
+• Отчет: Завтра в {report_time}
+• Очистка логов: Сегодня в 03:00
+"""
+
+    if auto_restart:
+        message += f"• Автоперезапуск: Завтра в {restart_time}\n"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Сгенерировать отчет", callback_data="generate_report"),
+            InlineKeyboardButton("⚙️ Настройки", callback_data="scheduler_settings")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+        ]
+    ]
+
+    await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
     if not is_user(update.effective_user.id):
