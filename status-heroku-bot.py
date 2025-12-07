@@ -352,6 +352,21 @@ async def check_system_health(context: ContextTypes.DEFAULT_TYPE):
                 print(f"Ошибка отправки алерта пользователю {user_id}: {e}")
 
 
+async def start_monitoring(context: ContextTypes.DEFAULT_TYPE):
+    """Запускает мониторинг системы"""
+    print("🚀 Запуск системы мониторинга...")
+    await check_system_health(context)
+
+async def stop_monitoring():
+    """Останавливает мониторинг системы"""
+    global monitor_task
+    if monitor_task:
+        monitor_task.cancel()
+        print("🛑 Мониторинг остановлен")
+
+
+
+
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
     """Редактирует сообщение с прогрессом"""
     if update.callback_query:
