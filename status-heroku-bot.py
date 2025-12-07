@@ -488,6 +488,65 @@ async def auto_restart_userbot(context: ContextTypes.DEFAULT_TYPE):
         print(f"Ошибка автоматического перезапуска: {e}")
 
 
+async def setup_scheduler(application):
+    """Настройка и запуск планировщика задач"""
+    global scheduler
+
+    if not SCHEDULED_TASKS_CONFIG["ENABLED"]:
+        print("Планировщик задач отключен в конфигурации")
+        return
+
+    print("🕐 Настраиваю планировщик задач...")
+
+    try:
+        # Создаем планировщик
+        scheduler = AsyncIOScheduler()
+
+        # Настраиваем временную зону
+        timezone = pytz.timezone(SCHEDULED_TASKS_CONFIG.get("TIMEZONE", "Europe/Moscow"))
+
+        # Задача: Ежедневный отчет
+        report_time = SCHEDULED_TASKS_CONFIG["DAILY_REPORT_TIME"]
+        hour, minute = map(int, report_time.split(":"))
+        scheduler.add_job(
+            daily_report,
+            CronTrigger(hour=hour, minute=minute, timezone=timezone),
+            args=[application]
+        )
+        print(f"✅ Ежедневный отчет настроен на {report_time}")
+
+        # Задача: Автоматический перезапуск юзербота
+        if SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"]:
+            restart_time = SCHEDULED_TASKS_CONFIG.get("AUTO_RESTART_TIME", "04:00")
+            hour, minute = map(int, restart_time.split(":"))
+            scheduler.add_job(
+                auto_restart_userbot,
+                CronTrigger(hour=hour, minute=minute, timezone=timezone),
+                args=[application]
+            )
+            print(f"✅ Автоперезапуск юзербота настроен на {restart_time}")
+
+        # Задача: Очистка старых логов (ежедневно в 03:00)
+        scheduler.add_job(
+            clean_old_logs,
+            CronTrigger(hour=3, minute=0, timezone=timezone),
+            args=[application]
+        )
+        print(f"✅ Очистка логов настроена на 03:00")
+
+        # Запускаем планировщик
+        scheduler.start()
+        print("✅ Планировщик задач запущен")
+
+    except Exception as e:
+        print(f"❌ Ошибка настройки планировщика: {e}")
+
+async def stop_scheduler():
+    """Остановка планировщика задач"""
+    global scheduler
+    if scheduler:
+        scheduler.shutdown()
+        print("🛑 Планировщик задач остановлен")
 
 
 async def clean_old_logs(context: ContextTypes.DEFAULT_TYPE):
