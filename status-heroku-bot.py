@@ -1330,6 +1330,7 @@ async def scheduler_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def toggle_auto_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SCHEDULED_TASKS_CONFIG
     """Переключение автоперезапуска юзербота"""
     query = update.callback_query
 
@@ -1423,6 +1424,7 @@ async def apply_scheduler_settings(update: Update, context: ContextTypes.DEFAULT
 
 
 async def save_scheduler_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SCHEDULED_TASKS_CONFIG
     """Сохранение настроек планировщика в config.json"""
     query = update.callback_query
 
@@ -1437,7 +1439,7 @@ async def save_scheduler_config(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("✅ Настройки сохранены в config.json", show_alert=True)
 
         # Обновляем глобальные переменные
-        global SCHEDULED_TASKS_CONFIG
+
         SCHEDULED_TASKS_CONFIG = CONFIG["SCHEDULED_TASKS"]
 
         await scheduler_settings(update, context)
@@ -1448,6 +1450,7 @@ async def save_scheduler_config(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_time_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global SCHEDULED_TASKS_CONFIG
     """Обработка установки времени"""
     query = update.callback_query
     data = query.data
