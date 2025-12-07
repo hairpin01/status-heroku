@@ -2425,6 +2425,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "open_logs_dir":
         await open_logs_dir_callback(update, context)
 
+
     elif data == "monitoring_status":
         await monitoring_status(update, context)
     elif data == "test_alert":
@@ -2457,6 +2458,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "save_scheduler_config":
         await save_scheduler_config(update, context)
 
+    # Обработка конкретных значений времени
     elif data.startswith("set_time_") or data.startswith("set_restart_") or \
          data.startswith("set_logs_") or data.startswith("set_tz_"):
         await handle_time_setting(update, context)
