@@ -411,6 +411,84 @@ async def daily_report(context: ContextTypes.DEFAULT_TYPE):
             print(f"Ошибка отправки отчета пользователю {user_id}: {e}")
 
 
+async def auto_restart_userbot(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматический перезапуск юзербота"""
+    if not SCHEDULED_TASKS_CONFIG["ENABLED"] or not SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"]:
+        return
+
+    print("🔄 Запускаю автоматический перезапуск юзербота...")
+
+    # Сначала останавливаем
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.info['cmdline'] or []
+            cmdline_str = ' '.join(cmdline).lower()
+            if ('python' in cmdline_str and 'heroku' in cmdline_str and '--no-web' in cmdline_str):
+                processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError):
+            continue
+
+    if processes:
+        for proc in processes:
+            try:
+                proc.terminate()
+            except:
+                pass
+
+        timeout = 10
+        start_time_stop = time.time()
+        while time.time() - start_time_stop < timeout:
+            await asyncio.sleep(2)
+            still_running = []
+            for proc in processes:
+                try:
+                    if proc.is_running():
+                        still_running.append(proc)
+                except:
+                    pass
+
+            if not still_running:
+                break
+
+        for proc in processes:
+            try:
+                proc.kill()
+            except:
+                pass
+
+    # Запускаем заново
+    try:
+        cmd = f"cd {USERBOT_DIR} && {USERBOT_CMD}"
+
+        env = os.environ.copy()
+        env['PATH'] = '/usr/bin:/bin:/usr/local/bin:/home/alina/.venv/bin'
+
+        process = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=USERBOT_DIR,
+            env=env
+        )
+
+        await asyncio.sleep(5)
+
+        is_running, _ = get_userbot_status()
+        if is_running:
+            notification = f"✅ Юзербот автоматически перезапущен в {datetime.now().strftime('%H:%M')}"
+            for user_id in USER_IDS:
+                await safe_send_message(context.bot, user_id, notification)
+        else:
+            notification = f"❌ Не удалось автоматически перезапустить юзербота"
+            if OWNER_ID and OWNER_ID.isdigit():
+                await safe_send_message(context.bot, int(OWNER_ID), notification)
+
+    except Exception as e:
+        print(f"Ошибка автоматического перезапуска: {e}")
+
+
+
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
     """Редактирует сообщение с прогрессом"""
     if update.callback_query:
