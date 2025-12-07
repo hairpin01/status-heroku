@@ -1390,6 +1390,20 @@ async def set_clean_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def toggle_scheduler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Включение/выключение планировщика"""
+    query = update.callback_query
+
+    SCHEDULED_TASKS_CONFIG["ENABLED"] = not SCHEDULED_TASKS_CONFIG["ENABLED"]
+
+    status = "включен" if SCHEDULED_TASKS_CONFIG["ENABLED"] else "выключен"
+    await query.answer(f"Планировщик {status}", show_alert=True)
+
+    # Обновляем сообщение
+    await scheduler_settings(update, context)
+
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
     if not is_user(update.effective_user.id):
