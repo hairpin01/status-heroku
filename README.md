@@ -6,6 +6,6 @@
 ### установка??
 Запусти файл, Python 3.13.7 или ниже
 ```
-python3 status-heroku
+python3 status-heroku.py
 ```
 
