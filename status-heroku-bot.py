@@ -248,6 +248,17 @@ def get_detailed_metrics():
 
 
 
+async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерирует отчет прямо сейчас"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        await update.callback_query.answer("❌ Только для владельца", show_alert=True)
+        return
+
+    await update.callback_query.answer("📊 Генерирую отчет...", show_alert=False)
+    await daily_report(context)
+
 
 async def safe_edit_message(bot, chat_id, message_id, text, **kwargs):
     """Безопасное редактирование сообщения"""
