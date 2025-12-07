@@ -1273,7 +1273,60 @@ async def scheduler_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+async def scheduler_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройки планировщика задач"""
+    query = update.callback_query
+    user_id = query.from_user.id
 
+    if not is_owner(user_id):
+        await query.answer("❌ Только для владельца", show_alert=True)
+        return
+
+    enabled = SCHEDULED_TASKS_CONFIG["ENABLED"]
+    report_time = SCHEDULED_TASKS_CONFIG["DAILY_REPORT_TIME"]
+    auto_restart = SCHEDULED_TASKS_CONFIG["AUTO_RESTART_USERBOT"]
+    restart_time = SCHEDULED_TASKS_CONFIG.get("AUTO_RESTART_TIME", "04:00")
+    clean_logs_days = SCHEDULED_TASKS_CONFIG.get("CLEAN_OLD_LOGS_DAYS", 7)
+    timezone = SCHEDULED_TASKS_CONFIG.get("TIMEZONE", "Europe/Moscow")
+
+    message = f"""
+⚙️ **НАСТРОЙКИ ПЛАНИРОВЩИКА**
+
+**Статус планировщика:** {'✅ Включен' if enabled else '❌ Выключен'}
+**Часовой пояс:** {timezone}
+
+**Текущие настройки:**
+📊 Ежедневный отчет: {report_time}
+🔄 Автоперезапуск: {'✅ Включен' if auto_restart else '❌ Выключен'}
+{'⏰ Время автоперезапуска: ' + restart_time if auto_restart else ''}
+🧹 Очистка логов: каждые {clean_logs_days} дней
+
+Используйте кнопки ниже для изменения настроек:
+"""
+
+    keyboard = [
+        [
+            InlineKeyboardButton(f"📅 Отчет: {report_time}", callback_data="set_report_time"),
+            InlineKeyboardButton(f"🔄 Авторестарт: {'✅' if auto_restart else '❌'}", callback_data="toggle_auto_restart")
+        ],
+        [
+            InlineKeyboardButton(f"⏰ Время рестарта: {restart_time}", callback_data="set_restart_time"),
+            InlineKeyboardButton(f"🧹 Логи: {clean_logs_days} дн.", callback_data="set_clean_days")
+        ],
+        [
+            InlineKeyboardButton(f"🌐 Часовой пояс: {timezone}", callback_data="set_timezone"),
+            InlineKeyboardButton(f"Планировщик: {'✅' if enabled else '❌'}", callback_data="toggle_scheduler")
+        ],
+        [
+            InlineKeyboardButton("🔄 Применить изменения", callback_data="apply_scheduler_settings"),
+            InlineKeyboardButton("💾 Сохранить в config", callback_data="save_scheduler_config")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data="scheduler_status")
+        ]
+    ]
+
+    await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает главное меню"""
