@@ -2179,6 +2179,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await open_logs_dir_callback(update, context)
 
     # Настройки
+
+    elif data == "monitoring_status":
+        await monitoring_status(update, context)
+
+    elif data == "test_alert":
+        await test_alert(update, context)
+
+    elif data == "load_graph":
+        await show_load_graph(update, context)
+
+    elif data == "monitoring_settings":
+        await monitoring_settings(update, context)
+
+    elif data == "scheduler_status":
+        await scheduler_status(update, context)
+
+    elif data == "generate_report":
+        await generate_report(update, context)
+
     elif data == "connection_status":
         await connection_status(update, context)
 
@@ -4301,22 +4320,32 @@ async def send_startup_notification(application):
 
 async def main():
     """Главная функция"""
-    global USER_IDS
+    global USER_IDS, monitor_task
 
-    print("Инициализация бота...")
+
+    print("Инициализация Monitor Bot")
+
+
     print(f"Версия бота: {BOT_VERSION}")
     print(f"Владелец: {OWNER_ID}")
 
     if not BOT_TOKEN or BOT_TOKEN == "":
-        print("❌ Ошибка: BOT_TOKEN не установлен в config.json")
+        print("Ошибка: BOT_TOKEN не установлен в config.json")
         return
 
     if not OWNER_ID or OWNER_ID == "":
-        print("❌ Ошибка: OWNER_ID не установлен в config.json")
+        print("Ошибка: OWNER_ID не установлен в config.json")
         return
 
+    # Загружаем пользователей
     load_users()
     print(f"Загружено пользователей: {len(USER_IDS)}")
+
+    # Загружаем конфигурацию заново для актуальности
+    global CONFIG, MONITORING_CONFIG, SCHEDULED_TASKS_CONFIG
+    CONFIG = load_config()
+    MONITORING_CONFIG = CONFIG.get("MONITORING", DEFAULT_CONFIG["MONITORING"])
+    SCHEDULED_TASKS_CONFIG = CONFIG.get("SCHEDULED_TASKS", DEFAULT_CONFIG["SCHEDULED_TASKS"])
 
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
@@ -4324,19 +4353,11 @@ async def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", show_main_menu))
-    application.add_handler(CommandHandler("start_userbot", start_userbot))
-    application.add_handler(CommandHandler("stop_userbot", stop_userbot))
-    application.add_handler(CommandHandler("restart_userbot", restart_userbot))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("info", system_info))
-    application.add_handler(CommandHandler("get_user", get_user))
-    application.add_handler(CommandHandler("del_user", del_user))
-    application.add_handler(CommandHandler("check_updates", check_updates))
-    application.add_handler(CommandHandler("update_bot", update_bot))
+    application.add_handler(CommandHandler("monitoring", monitoring_status))
 
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    print("Бот запускается...")
+    print("Бот инициализирован")
 
     try:
         await application.initialize()
@@ -4350,8 +4371,40 @@ async def main():
 
         print("Polling запущен")
 
-        # Отправляем уведомления
-        await send_startup_notification(application)
+        # Запускаем планировщик задач
+        await setup_scheduler(application)
+
+        # Запускаем мониторинг системы
+        if MONITORING_CONFIG["ENABLED"]:
+            print(f"Запуск мониторинга (интервал: {MONITORING_CONFIG['CHECK_INTERVAL']} сек)")
+
+            # Фоновая задача для мониторинга
+            async def monitoring_loop():
+                while True:
+                    try:
+                        await check_system_health(application)
+                    except Exception as e:
+                        print(f"Ошибка мониторинга: {e}")
+                    await asyncio.sleep(MONITORING_CONFIG["CHECK_INTERVAL"])
+
+            monitor_task = asyncio.create_task(monitoring_loop())
+            print("Система мониторинга запущена")
+
+        print("Бот успешно запущен и готов к работе!")
+
+
+        # Отправляем уведомление о запуске
+        bot_info = await application.bot.get_me()
+        startup_message = f"""
+**Бот {bot_info.first_name} запущен**
+• Версия: {BOT_VERSION}
+        """
+
+        for user_id in USER_IDS:
+            try:
+                await safe_send_message(application.bot, user_id, startup_message, parse_mode='Markdown')
+            except Exception as e:
+                print(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
 
         # Бесконечный цикл
         while True:
@@ -4360,7 +4413,13 @@ async def main():
     except Exception as e:
         print(f"Критическая ошибка: {e}")
     finally:
-        print("Завершаем работу бота...")
+        print("\nЗавершаем работу бота...")
+
+
+        await stop_monitoring()
+        await stop_scheduler()
+
+        # Останавливаем приложение
         try:
             if application.updater:
                 await application.updater.stop()
@@ -4369,10 +4428,12 @@ async def main():
         except Exception as e:
             print(f"Ошибка при завершении: {e}")
 
+        print("Бот остановлен")
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Бот остановлен пользователем")
+        print("\n Бот остановлен пользователем")
     except Exception as e:
         print(f"Критическая ошибка: {e}")
