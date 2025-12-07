@@ -22,14 +22,34 @@ CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {
     "BOT_TOKEN": "",
     "OWNER_ID": "",
-    "USERBOT_DIR": "/home/(вы)/Heroku",
-    "VENV_PYTHON": "/home/(вы)/.venv/bin/python",
+    "USERBOT_DIR": "/home/alina/Heroku-dev",
+    "VENV_PYTHON": "/home/alina/.venv/bin/python",
     "PROXYCHAINS_PATH": "/usr/bin/proxychains",
     "GITHUB_REPO": "hairpin01/status-heroku",
     "GITHUB_RAW_URL": "https://raw.githubusercontent.com/hairpin01/status-heroku/main/status-heroku-bot.py",
-    "BOT_VERSION": "1.0.6",
+    "BOT_VERSION": "1.0.7",
     "USER_IDS_FILE": "users.json",
-    "LOG_FILE": "heroku.log"
+    "LOG_FILE": "heroku.log",
+    "MONITORING": {
+        "ENABLED": True,
+        "CHECK_INTERVAL": 60,
+        "ALERTS": {
+            "CPU_THRESHOLD": 85,
+            "RAM_THRESHOLD": 85,
+            "DISK_THRESHOLD": 90,
+            "MIN_INTERVAL_BETWEEN_ALERTS": 300,
+            "NOTIFY_USERS": True,
+            "NOTIFY_OWNER_ONLY": False
+        }
+    },
+    "SCHEDULED_TASKS": {
+        "ENABLED": True,
+        "DAILY_REPORT_TIME": "09:00",
+        "AUTO_RESTART_USERBOT": False,
+        "AUTO_RESTART_TIME": "04:00",
+        "CLEAN_OLD_LOGS_DAYS": 7,
+        "TIMEZONE": "Europe/Moscow"
+    }
 }
 
 def load_config():
@@ -38,10 +58,15 @@ def load_config():
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
-                # Заполняем недостающие значения по умолчанию
-                for key, value in DEFAULT_CONFIG.items():
-                    if key not in config:
-                        config[key] = value
+                # Рекурсивно обновляем недостающие значения
+                def update_dict(d, u):
+                    for k, v in u.items():
+                        if isinstance(v, dict):
+                            d[k] = update_dict(d.get(k, {}), v)
+                        else:
+                            d.setdefault(k, v)
+                    return d
+                config = update_dict(config, DEFAULT_CONFIG)
                 return config
         else:
             # Создаем файл конфигурации
