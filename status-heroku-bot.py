@@ -1202,14 +1202,13 @@ async def send_debug_message(message, bot=None):
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать главное меню"""
+    """Показывает главное меню"""
     if not is_user(update.effective_user.id):
         if update.callback_query:
-            await update.callback_query.answer("❌ У вас нет доступа к этому боту", show_alert=True)
-            return
+            await update.callback_query.answer("❌ У вас нет доступа", show_alert=True)
         else:
-            await update.message.reply_text("❌ У вас нет доступа к этому боту")
-            return
+            await update.message.reply_text("❌ У вас нет доступа")
+        return
 
     keyboard = [
         [
@@ -1221,8 +1220,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🛑 Остановить", callback_data="stop_userbot")
         ],
         [
-            InlineKeyboardButton("🔧 Управление", callback_data="management"),
-            InlineKeyboardButton("📋 Логи", callback_data="logs_menu")
+            InlineKeyboardButton("📈 Мониторинг", callback_data="monitoring_status"),
+            InlineKeyboardButton("🕐 Планировщик", callback_data="scheduler_status")
         ],
         [
             InlineKeyboardButton("🌐 Соединение", callback_data="connection_status"),
@@ -1233,20 +1232,19 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("❓ Помощь", callback_data="help")
         ]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    is_running, start_time = get_userbot_status()
+    is_running, start_time_userbot = get_userbot_status()
     status_text = "✅ Запущен" if is_running else "❌ Остановлен"
     if is_running:
-        uptime = time.time() - start_time
+        uptime = time.time() - start_time_userbot
         status_text += f" (Uptime: {int(uptime // 3600)}h {int((uptime % 3600) // 60)}m)"
 
-    message_text = f"🤖 **Главное меню v{BOT_VERSION}**\n\n📊 Статус юзербота: {status_text}\n\nВыберите действие:"
+    message = f"🤖 **Главное меню v{BOT_VERSION}**\n\n📊 Статус юзербота: {status_text}"
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меню настроек"""
