@@ -1258,6 +1258,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🛑 Остановить", callback_data="stop_userbot")
         ],
         [
+            InlineKeyboardButton("🔧 Управление", callback_data="management"),
+            InlineKeyboardButton("📋 Логи", callback_data="logs_menu")
+        ],
+        [
             InlineKeyboardButton("📈 Мониторинг", callback_data="monitoring_status"),
             InlineKeyboardButton("🕐 Планировщик", callback_data="scheduler_status")
         ],
