@@ -548,6 +548,91 @@ async def stop_scheduler():
         scheduler.shutdown()
         print("🛑 Планировщик задач остановлен")
 
+async def monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статус мониторинга"""
+    if not is_user(update.effective_user.id):
+        return
+
+    cpu_threshold = MONITORING_CONFIG["ALERTS"]["CPU_THRESHOLD"]
+    ram_threshold = MONITORING_CONFIG["ALERTS"]["RAM_THRESHOLD"]
+    disk_threshold = MONITORING_CONFIG["ALERTS"]["DISK_THRESHOLD"]
+
+    status = "✅ Включен" if MONITORING_CONFIG["ENABLED"] else "❌ Выключен"
+
+    # Текущие метрики
+    metrics = get_detailed_metrics()
+
+    # Определяем статус каждого параметра
+    cpu_status = "🚨" if metrics["cpu"] > cpu_threshold else "✅"
+    ram_status = "🚨" if metrics["ram_percent"] > ram_threshold else "✅"
+    disk_status = "🚨" if metrics["disk_percent"] > disk_threshold else "✅"
+
+    message = f"""
+📊 **СИСТЕМА МОНИТОРИНГА**
+
+**Статус:** {status}
+**Интервал проверки:** {MONITORING_CONFIG['CHECK_INTERVAL']} сек
+**Кулдаун алертов:** {alert_cooldown // 60} мин
+
+**Пороги алертов:**
+• CPU: {cpu_threshold}% {cpu_status}
+• RAM: {ram_threshold}% {ram_status}
+• Диск: {disk_threshold}% {disk_status}
+
+**Текущие значения:**
+• CPU: {metrics['cpu']:.1f}%
+• RAM: {metrics['ram_percent']:.1f}%
+• Диск: {metrics['disk_percent']:.1f}%
+
+**Получатели алертов:** {'Все пользователи' if MONITORING_CONFIG['ALERTS']['NOTIFY_USERS'] else 'Только владелец'}
+"""
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🔔 Тестовый алерт", callback_data="test_alert"),
+            InlineKeyboardButton("⚙️ Настройки", callback_data="monitoring_settings")
+        ],
+        [
+            InlineKeyboardButton("📊 График нагрузки", callback_data="load_graph"),
+            InlineKeyboardButton("⬅️ Назад", callback_data="settings")
+        ]
+    ]
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def test_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет тестовый алерт"""
+    user_id = update.effective_user.id
+
+    if not is_owner(user_id):
+        await update.callback_query.answer("❌ Только для владельца", show_alert=True)
+        return
+
+    test_message = """
+🚨 **ТЕСТОВЫЙ АЛЕРТ** 🚨
+
+Это тестовое сообщение системы мониторинга.
+
+✅ Все системы работают нормально
+📊 Мониторинг активен
+🕐 Время: {time}
+
+Если вы получили это сообщение, значит:
+1. Система алертов работает
+2. Вы настроены как получатель
+3. Бот может отправлять вам сообщения
+""".format(time=datetime.now().strftime('%H:%M:%S'))
+
+    await safe_send_message(context.bot, user_id, test_message, parse_mode='Markdown')
+    await update.callback_query.answer("✅ Тестовый алерт отправлен", show_alert=True)
+
+
+
+
+
 
 async def clean_old_logs(context: ContextTypes.DEFAULT_TYPE):
     """Очистка старых логов"""
