@@ -364,7 +364,51 @@ async def stop_monitoring():
         monitor_task.cancel()
         print("🛑 Мониторинг остановлен")
 
+async def daily_report(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневный отчет о состоянии системы"""
+    if not SCHEDULED_TASKS_CONFIG["ENABLED"]:
+        return
 
+    print("📊 Генерирую ежедневный отчет...")
+
+    metrics = get_detailed_metrics()
+    is_running, start_time_userbot = get_userbot_status()
+
+    # Время работы системы
+    system_uptime = time.time() - psutil.boot_time()
+    bot_uptime = time.time() - start_time if 'start_time' in globals() else 0
+
+    # Формируем отчет
+    report = f"""
+📈 **ЕЖЕДНЕВНЫЙ ОТЧЕТ** {datetime.now().strftime('%d.%m.%Y')}
+
+🖥 **Состояние системы:**
+• CPU: {metrics['cpu']:.1f}%
+• RAM: {metrics['ram_percent']:.1f}% ({metrics['ram_used']}/{metrics['ram_total']} GB)
+• Disk: {metrics['disk_percent']:.1f}% ({metrics['disk_used']}/{metrics['disk_total']} GB)
+• Температура CPU: {metrics['cpu_temp'] if metrics['cpu_temp'] != 'N/A' else 'N/A'}°C
+• Сеть: 📤 {metrics['net_sent']} MB | 📥 {metrics['net_recv']} MB
+
+🤖 **Статус юзербота:** {'✅ Запущен' if is_running else '❌ Остановлен'}
+{'• Время работы: ' + f"{int((time.time() - start_time_userbot) // 3600)}ч {int(((time.time() - start_time_userbot) % 3600) // 60)}м" if is_running else ''}
+
+⏱ **Время работы:**
+• Система: {int(system_uptime // 3600)}ч {int((system_uptime % 3600) // 60)}м
+• Бот: {int(bot_uptime // 3600)}ч {int((bot_uptime % 3600) // 60)}м
+
+👥 **Пользователи:** {len(USER_IDS)}
+🔄 **Версия бота:** {BOT_VERSION}
+
+📅 Следующий отчет завтра в {SCHEDULED_TASKS_CONFIG['DAILY_REPORT_TIME']}
+    """
+
+    # Отправляем отчет всем пользователям
+    for user_id in USER_IDS:
+        try:
+            await safe_send_message(context.bot, user_id, report, parse_mode='Markdown')
+            print(f"Отчет отправлен пользователю {user_id}")
+        except Exception as e:
+            print(f"Ошибка отправки отчета пользователю {user_id}: {e}")
 
 
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
