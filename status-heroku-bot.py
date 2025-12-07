@@ -697,6 +697,42 @@ async def clean_old_logs(context: ContextTypes.DEFAULT_TYPE):
         print(f"Ошибка очистки логов: {e}")
 
 
+async def monitoring_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройки мониторинга"""
+    if not is_owner(update.callback_query.from_user.id):
+        await update.callback_query.answer("❌ Только для владельца", show_alert=True)
+        return
+
+    cpu_threshold = MONITORING_CONFIG["ALERTS"]["CPU_THRESHOLD"]
+    ram_threshold = MONITORING_CONFIG["ALERTS"]["RAM_THRESHOLD"]
+
+    keyboard = [
+        [
+            InlineKeyboardButton(f"CPU: {cpu_threshold}%", callback_data="set_cpu_threshold"),
+            InlineKeyboardButton(f"RAM: {ram_threshold}%", callback_data="set_ram_threshold")
+        ],
+        [
+            InlineKeyboardButton(f"Интервал: {MONITORING_CONFIG['CHECK_INTERVAL']}с", callback_data="set_check_interval")
+        ],
+        [
+            InlineKeyboardButton("🔔 Тест", callback_data="test_alert"),
+            InlineKeyboardButton("📊 График", callback_data="load_graph")
+        ],
+        [
+            InlineKeyboardButton("✅ Вкл" if MONITORING_CONFIG["ENABLED"] else "❌ Выкл", callback_data="toggle_monitoring"),
+            InlineKeyboardButton("👥 Рассылка" if MONITORING_CONFIG["ALERTS"]["NOTIFY_USERS"] else "👑 Только владелец", callback_data="toggle_notify_users")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data="monitoring_status")
+        ]
+    ]
+
+    message = "⚙️ **Настройки мониторинга**\n\nИзмените пороги алертов и настройки:"
+
+    await update.callback_query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
+
 async def edit_message_progress(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id, text):
     """Редактирует сообщение с прогрессом"""
     if update.callback_query:
