@@ -630,7 +630,37 @@ async def test_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("✅ Тестовый алерт отправлен", show_alert=True)
 
 
+async def show_load_graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает график нагрузки"""
+    metrics = get_detailed_metrics()
 
+    def create_bar(value, threshold):
+        filled = int(value / 5)  # 20 шагов = 100%
+        if value > threshold:
+            bar = "🔴" + "█" * (filled - 1) + "░" * (20 - filled)
+        else:
+            bar = "🟢" + "█" * (filled - 1) + "░" * (20 - filled)
+        return bar
+
+    cpu_bar = create_bar(metrics["cpu"], MONITORING_CONFIG["ALERTS"]["CPU_THRESHOLD"])
+    ram_bar = create_bar(metrics["ram_percent"], MONITORING_CONFIG["ALERTS"]["RAM_THRESHOLD"])
+    disk_bar = create_bar(metrics["disk_percent"], MONITORING_CONFIG["ALERTS"]["DISK_THRESHOLD"])
+
+    graph = f"""
+📈 **ГРАФИК НАГРУЗКИ СИСТЕМЫ**
+
+CPU [{metrics['cpu']:>5.1f}%] {cpu_bar}
+RAM [{metrics['ram_percent']:>5.1f}%] {ram_bar}
+Диск [{metrics['disk_percent']:>5.1f}%] {disk_bar}
+
+🟢 Нормально | 🔴 Высокая нагрузка
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+0%{' ' * 18}50%{' ' * 18}100%
+"""
+
+    keyboard = [[InlineKeyboardButton("🔄 Обновить", callback_data="load_graph"), InlineKeyboardButton("⬅️ Назад", callback_data="monitoring_status")]]
+
+    await update.callback_query.edit_message_text(graph, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 
