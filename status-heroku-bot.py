@@ -1,5 +1,10 @@
 import os
 import time
+import anyio
+try:
+    from anyio import CancelScope
+except ImportError:
+    from anyio._backends._asyncio import CancelScope
 import subprocess
 import psutil
 import json
